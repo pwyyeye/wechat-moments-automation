@@ -386,6 +386,47 @@ async def ws_events(ws: WebSocket):
 # 健康检查
 # ═══════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════
+# 多账号管理
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/api/accounts")
+async def api_accounts():
+    """列出所有可用的微信账号"""
+    try:
+        from src.core.account_manager import WeChatWindowFinder
+        windows = WeChatWindowFinder.enum_all()
+        accounts = []
+        for hwnd, title in windows:
+            info = WeChatWindowFinder.get_window_info(hwnd)
+            if info:
+                accounts.append({
+                    'name': info.name,
+                    'process_id': info.process_id,
+                    'is_minimized': info.is_minimized,
+                    'is_visible': info.is_visible,
+                })
+        return {"accounts": accounts, "count": len(accounts)}
+    except Exception as e:
+        return {"accounts": [], "count": 0, "error": str(e)}
+
+
+@app.post("/api/accounts/{name}/publish")
+async def api_account_publish(name: str, req: PublishRequest):
+    """在指定账号上发布朋友圈"""
+    if state.publisher is None:
+        raise HTTPException(503, "Publisher 未初始化")
+    # TODO: 集成 AccountManager 的多账号发布
+    # 当前回退到默认 publisher
+    task_data = type('obj', (), {'text': req.text, 'images': req.images})()
+    result = state.publisher.publish(task_data)
+    return PublishResponse(
+        success=result.success,
+        elapsed_seconds=getattr(result, 'elapsed_seconds', 0),
+        error=getattr(result, 'error_message', ''),
+    )
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "timestamp": time.time()}

@@ -14,7 +14,8 @@
 10. [环境搭建与编译](#10-环境搭建与编译)
 11. [配置文件说明](#11-配置文件说明)
 12. [扩展指南](#12-扩展指南)
-13. [故障排查](#13-故障排查)
+13. [多账号支持](#13-多账号支持)
+14. [故障排查](#14-故障排查)
 
 ---
 
@@ -862,7 +863,95 @@ sim = HumanSimulator(config)
 
 ---
 
-## 13. 故障排查
+## 13. 多账号支持
+
+### 13.1 架构
+
+多账号支持通过 `AccountManager` 实现：
+
+```
+AccountManager
+├── Account "工作号" (hwnd=12345)
+│   ├── Publisher (独立实例)
+│   ├── Calibrator (独立校准)
+│   ├── Operator (绑定特定窗口)
+│   └── RiskDetector (独立风控)
+├── Account "生活号" (hwnd=67890)
+│   └── ...
+└── 共享: OCR引擎 + FeatureLocator + EventBus
+```
+
+每个微信窗口通过窗口标题（微信昵称）区分。
+
+### 13.2 CLI 用法
+
+```bash
+# 列出所有微信窗口
+python main.py --accounts
+
+# 指定账号发布
+python main.py --account 工作号 --text "工作内容"
+
+# 指定账号交互
+python main.py --account 生活号 --interactive
+
+# 定时调度（切换账号发布）
+python main.py --account 工作号 --schedule
+```
+
+### 13.3 API 端点
+
+```
+GET  /api/accounts                   列出所有微信窗口
+POST /api/accounts/{name}/publish    在指定账号发布
+```
+
+### 13.4 AccountManager 核心接口
+
+```python
+from src.core.account_manager import AccountManager, WeChatWindowFinder
+
+mgr = AccountManager(ocr_engine, feature_locator, config)
+
+# 扫描注册
+accounts = mgr.scan_and_register()   # 自动扫描所有微信窗口
+
+# 切换
+mgr.set_active("工作号")
+
+# 发布
+result = mgr.publish(PublishTask("hello"))
+
+# 状态
+statuses = mgr.list_all()
+
+# 关闭
+mgr.shutdown()
+```
+
+### 13.5 窗口枚举
+
+```python
+from src.core.account_manager import WeChatWindowFinder
+
+# 枚举所有微信窗口
+windows = WeChatWindowFinder.enum_all()
+# → [(hwnd1, "工作号"), (hwnd2, "生活号")]
+
+# 按名称查找
+hwnd = WeChatWindowFinder.find_by_name("工作号")
+
+# 获取详情
+info = WeChatWindowFinder.get_window_info(hwnd)
+# → AccountInfo(name, hwnd, process_id, window_rect, is_minimized, ...)
+
+# 激活窗口
+WeChatWindowFinder.activate_window(hwnd)
+```
+
+---
+
+## 14. 故障排查
 
 ### 13.1 微信窗口未找到
 

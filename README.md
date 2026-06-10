@@ -40,7 +40,7 @@ python main.py --status
 | **事件驱动** | EventBus + Watcher 后台监测，等事件不等时间 |
 | **类人行为** | Gamma 延迟 + 贝塞尔鼠标轨迹 + 键盘时序 + 随机多余动作 |
 | **风控感知** | 自动检测风控信号 + 指数退避冷却 + 静默失效检测 |
-| **多端控制** | CLI + REST API + WebSocket + Telegram/Discord (OpenClaw) + Electron GUI |
+| **多账号** | 自动发现多个微信窗口，每个独立 Publisher/Calibrator/Risk |
 | **自动校准** | 启动时自动扫描界面建立锚点，窗口移动自动重新校准 |
 | **版本追踪** | 检测微信版本变化，自动重建模板库 |
 | **任务持久** | 断点续传 + 定时调度 (cron) + 发布历史 |

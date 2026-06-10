@@ -39,6 +39,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.core import EventDrivenPublisher, PublishTask, PublishResult
+from src.core.account_manager import AccountManager, WeChatWindowFinder
 
 # ═══════════════════════════════════════════════════════════════
 # 任务持久化
@@ -138,6 +139,8 @@ def parse_args():
     parser.add_argument('--calibrate', action='store_true', help='手动触发界面校准')
     parser.add_argument('--extract-templates', action='store_true', help='提取/更新图标模板库')
     parser.add_argument('--test', action='store_true', help='运行自检（不操作微信）')
+    parser.add_argument('--account', type=str, help='指定微信账号（多开时使用）')
+    parser.add_argument('--accounts', action='store_true', help='列出所有检测到的微信窗口')
     parser.add_argument('--dry-run', action='store_true', help='空跑模式')
     parser.add_argument('--resume', action='store_true', help='从上次中断恢复')
     return parser.parse_args()
@@ -378,11 +381,50 @@ def main():
 
     args = parse_args()
 
-    # 初始化事件驱动发布器
-    publisher = EventDrivenPublisher(config_path=args.config)
-    _publisher_ref = publisher
+    # 初始化（单账号或多账号模式）
+    publisher = None
+    account_mgr = None
+    windows = WeChatWindowFinder.enum_all()
+
+    if args.account:
+        account_mgr = AccountManager(bus=None)
+        hwnd = WeChatWindowFinder.find_by_name(args.account)
+        if hwnd is None:
+            print(f"❌ 未找到账号 '{args.account}'")
+            for _, title in windows:
+                print(f"  - {title}")
+            return 1
+        info = WeChatWindowFinder.get_window_info(hwnd)
+        account_mgr.register(info)
+        account_mgr.set_active(args.account)
+        account_mgr.active.publisher.initialize()
+        publisher = account_mgr.active.publisher
+        _publisher_ref = publisher
+    elif len(windows) > 1 and not args.accounts:
+        print(f"⚠️ 检测到 {len(windows)} 个微信窗口，请指定 --account <名称>")
+        for _, title in windows:
+            print(f"  - {title}")
+        return 1
+    else:
+        publisher = EventDrivenPublisher(config_path=args.config)
+        _publisher_ref = publisher
 
     try:
+        # 列出所有微信窗口
+        if args.accounts:
+            windows = WeChatWindowFinder.enum_all()
+            if not windows:
+                print("未发现运行中的微信窗口")
+            else:
+                print(f"发现 {len(windows)} 个微信窗口:\n")
+                for hwnd, title in windows:
+                    info = WeChatWindowFinder.get_window_info(hwnd)
+                    if info:
+                        marker = " ← 当前活跃" if not getattr(args, 'account', None) else ""
+                        print(f"  📱 {info.name:20s} PID={info.process_id} "
+                              f"{'(最小化)' if info.is_minimized else ''}{marker}")
+            return 0
+
         # 查看状态模式（不需要完整初始化）
         if args.status:
             if publisher.operator.find_wechat_window():
