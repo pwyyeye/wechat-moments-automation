@@ -155,8 +155,9 @@ class EventDrivenPublisher:
 
     def _setup_event_handlers(self):
         """注册全局事件处理器"""
-        # 窗口移动 → 重新校准
+        # 窗口移动/缩放 → 重新校准
         self.bus.on(EventType.WINDOW_MOVED, self._on_window_moved)
+        self.bus.on(EventType.WINDOW_RESIZED, self._on_window_moved)
 
         # 弹窗检测 → 自动关闭
         self.bus.on(EventType.POPUP_DETECTED, self._on_popup)

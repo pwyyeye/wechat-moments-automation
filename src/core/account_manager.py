@@ -80,22 +80,34 @@ class AccountState:
 class WeChatWindowFinder:
     """微信窗口查找器 — 枚举所有微信窗口实例"""
 
-    WECHAT_CLASS = "WeChatMainWndForPC"
+    # 微信窗口类名（按版本）：传统Win32 / Qt 5.15.x / Qt 6.x
+    WECHAT_CLASS_PATTERNS = [
+        "WeChatMainWndForPC",
+        "Qt51514QWindowIcon",
+        "Qt5152QWindowIcon",
+        "Qt6",
+    ]
+
+    @staticmethod
+    def _is_wechat_window(hwnd) -> bool:
+        """判断窗口是否为微信窗口"""
+        cls = win32gui.GetClassName(hwnd)
+        for pattern in WeChatWindowFinder.WECHAT_CLASS_PATTERNS:
+            if pattern in cls or cls == pattern:
+                return True
+        # Qt 窗口标题为"微信"的也接受
+        if cls.startswith('Qt') and win32gui.GetWindowText(hwnd) == '微信':
+            return True
+        return False
 
     @staticmethod
     def enum_all() -> List[Tuple[int, str]]:
-        """
-        枚举所有微信窗口。
-
-        Returns:
-            [(hwnd, window_title), ...] 列表
-        """
+        """枚举所有微信窗口（支持 Qt 和传统窗口类名）"""
         windows = []
 
         def callback(hwnd, results):
             if win32gui.IsWindowVisible(hwnd):
-                class_name = win32gui.GetClassName(hwnd)
-                if class_name == WeChatWindowFinder.WECHAT_CLASS:
+                if WeChatWindowFinder._is_wechat_window(hwnd):
                     title = win32gui.GetWindowText(hwnd)
                     if title and title != '微信':  # "微信"是默认标题，说明未登录
                         results.append((hwnd, title or f"微信窗口_{hwnd}"))
