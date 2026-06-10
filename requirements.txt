@@ -28,5 +28,11 @@ PyYAML>=6.0                   # 配置文件解析
 loguru>=0.7.0                 # 结构化日志（比 logging 好用）
 dataclasses-json>=0.6.0       # 数据类序列化（Python 3.10 内建 dataclasses）
 
+# ── API Server ──
+fastapi>=0.115.0               # REST API 框架
+uvicorn>=0.30.0                # ASGI 服务器
+pydantic>=2.0.0                # 数据验证
+croniter>=2.0.0                # Cron 表达式解析（定时任务）
+
 # ── 可选 ──
 # onnxruntime>=1.15.0          # PaddleOCR ONNX 加速（需 GPU 则装 onnxruntime-gpu）
