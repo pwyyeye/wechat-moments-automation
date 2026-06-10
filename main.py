@@ -32,6 +32,7 @@ import argparse
 import signal
 import json
 import time
+import win32gui
 from pathlib import Path
 from datetime import datetime
 
@@ -388,11 +389,19 @@ def main():
 
     if args.account:
         account_mgr = AccountManager(bus=None)
-        hwnd = WeChatWindowFinder.find_by_name(args.account)
+        # 支持按 PID 指定账号
+        if args.account.isdigit():
+            hwnd = int(args.account)
+            valid = WeChatWindowFinder.get_window_info(hwnd)
+            if valid is None or not win32gui.IsWindow(hwnd):
+                hwnd = None
+        else:
+            hwnd = WeChatWindowFinder.find_by_name(args.account)
         if hwnd is None:
             print(f"❌ 未找到账号 '{args.account}'")
-            for _, title in windows:
-                print(f"  - {title}")
+            for hwnd_found, title in windows:
+                info = WeChatWindowFinder.get_window_info(hwnd_found)
+                print(f"  - {title} (PID={info.process_id if info else '?'})")
             return 1
         info = WeChatWindowFinder.get_window_info(hwnd)
         account_mgr.register(info)
@@ -400,10 +409,11 @@ def main():
         account_mgr.active.publisher.initialize()
         publisher = account_mgr.active.publisher
         _publisher_ref = publisher
-    elif len(windows) > 1 and not args.accounts:
-        print(f"⚠️ 检测到 {len(windows)} 个微信窗口，请指定 --account <名称>")
+    elif len(windows) > 1 and not args.accounts and not args.status:
+        print(f"⚠️ 检测到 {len(windows)} 个微信窗口，请指定 --account <名称或PID>")
         for _, title in windows:
             print(f"  - {title}")
+        print("\n提示: 使用 --accounts 查看详细信息 (含PID)")
         return 1
     else:
         publisher = EventDrivenPublisher(config_path=args.config)
@@ -420,9 +430,9 @@ def main():
                 for hwnd, title in windows:
                     info = WeChatWindowFinder.get_window_info(hwnd)
                     if info:
-                        marker = " ← 当前活跃" if not getattr(args, 'account', None) else ""
-                        print(f"  📱 {info.name:20s} PID={info.process_id} "
-                              f"{'(最小化)' if info.is_minimized else ''}{marker}")
+                        display_name = f"{info.name} (PID={info.process_id})"
+                        print(f"  📱 {display_name:30s} "
+                              f"{'(最小化)' if info.is_minimized else ''}")
             return 0
 
         # 查看状态模式（不需要完整初始化）

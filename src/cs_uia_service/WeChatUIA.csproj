@@ -8,10 +8,11 @@
     <SelfContained>false</SelfContained>
     <AssemblyName>WeChatUIA</AssemblyName>
     <RootNamespace>WeChatUIA</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="FlaUI.UIA3" Version="4.0.0" />
-  </ItemGroup>
+  <!-- UIAutomation 已包含在 WPF 中，无需额外 NuGet 包 -->
 
 </Project>

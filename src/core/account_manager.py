@@ -108,9 +108,9 @@ class WeChatWindowFinder:
         def callback(hwnd, results):
             if win32gui.IsWindowVisible(hwnd):
                 if WeChatWindowFinder._is_wechat_window(hwnd):
-                    title = win32gui.GetWindowText(hwnd)
-                    if title and title != '微信':  # "微信"是默认标题，说明未登录
-                        results.append((hwnd, title or f"微信窗口_{hwnd}"))
+                    title = win32gui.GetWindowText(hwnd) or f"微信窗口_{hwnd}"
+                    # Qt 版微信登录后标题就是"微信"，不是昵称
+                    results.append((hwnd, title))
 
         win32gui.EnumWindows(callback, windows)
         return windows

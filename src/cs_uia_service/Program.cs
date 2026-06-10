@@ -1,26 +1,17 @@
 /*
- * WeChatUIA — 微信窗口交互微服务
+ * WeChatUIA v2 — 原生 UIAutomation 客户端，触发微信 4.x 无障碍模式。
  *
- * 职责：
- *   1. 附着微信窗口，触发无障碍模式（解锁完整 UIA 控件树）
- *   2. dump 完整控件树为 JSON（供 Python 端消费）
- *   3. 监控窗口位置变化（SetWinEventHook）
- *   4. 窗口激活/置顶/恢复操作
+ * 核心原理:
+ *   微信 4.x 检查是否有合规 UIA 客户端附着到其窗口。
+ *   当检测到 UIAutomationClient.dll 的调用时，微信会加载完整的控件 Provider。
+ *   用原生 System.Windows.Automation 替代 FlaUI，确保信号不被中间层阻断。
  *
- * 使用方式（从 Python 调用）：
- *   WeChatUIA.exe dump-tree              # 输出控件树 JSON 到 stdout
- *   WeChatUIA.exe activate               # 激活微信窗口到前台
- *   WeChatUIA.exe monitor                # 持续监控窗口位置，变化时输出 JSON
- *   WeChatUIA.exe check-login            # 检测是否掉线（OCR 关键词快速扫描）
- *   WeChatUIA.exe get-window-rect        # 获取窗口位置和尺寸
- *
- * 编译：
- *   dotnet publish -c Release -o publish
- *   (输出 publish/WeChatUIA.exe)
- *
- * 依赖：
- *   .NET 10.0 SDK
- *   NuGet: FlaUI.UIA3
+ * 使用方式:
+ *   WeChatUIA.exe dump-tree    — 输出控件树 JSON
+ *   WeChatUIA.exe check-login  — 检测登录状态
+ *   WeChatUIA.exe activate     — 激活微信窗口
+ *   WeChatUIA.exe monitor      — 窗口位置监控
+ *   WeChatUIA.exe get-rect     — 窗口位置
  */
 
 #nullable enable
@@ -32,18 +23,11 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
-using FlaUI.Core;
-using FlaUI.UIA3;
-using FlaUI.Core.AutomationElements;
-using FlaUI.Core.Definitions;
-using FlaUI.Core.Tools;
+using System.Windows;
+using System.Windows.Automation;
 
 namespace WeChatUIA
 {
-    // ═══════════════════════════════════════════════════════
-    // JSON 输出模型
-    // ═══════════════════════════════════════════════════════
-
     public class UIElementInfo
     {
         public string ControlType { get; set; } = "";
@@ -65,12 +49,9 @@ namespace WeChatUIA
         public int Top { get; set; }
         public int Right { get; set; }
         public int Bottom { get; set; }
-        public int Width => Right - Left;
-        public int Height => Bottom - Top;
         public string Title { get; set; } = "";
         public string ClassName { get; set; } = "";
         public bool IsMinimized { get; set; }
-        public bool IsVisible { get; set; }
         public long Timestamp { get; set; }
     }
 
@@ -80,7 +61,6 @@ namespace WeChatUIA
         public UIElementInfo RootElement { get; set; } = new();
         public int TotalElements { get; set; }
         public long Timestamp { get; set; }
-        public string Version { get; set; } = "1.0";
     }
 
     public class LoginCheckResult
@@ -91,130 +71,218 @@ namespace WeChatUIA
         public long Timestamp { get; set; }
     }
 
-    // ═══════════════════════════════════════════════════════
-    // 主程序
-    // ═══════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════
+    // Win32 API
+    // ═══════════════════════════════════════════════════════════
 
-    class Program
+    class Win32
     {
-        // Win32 API
         [DllImport("user32.dll")]
-        static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+        public static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
 
         [DllImport("user32.dll")]
-        static extern bool IsIconic(IntPtr hWnd);
+        public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
         [DllImport("user32.dll")]
-        static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
 
         [DllImport("user32.dll")]
-        static extern bool SetForegroundWindow(IntPtr hWnd);
+        public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
 
         [DllImport("user32.dll")]
-        static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+        public static extern bool IsWindowVisible(IntPtr hWnd);
 
         [DllImport("user32.dll")]
-        static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        public static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
             int X, int Y, int cx, int cy, uint uFlags);
 
         [DllImport("user32.dll")]
-        static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax,
-            IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc,
-            int idProcess, int idThread, uint dwFlags);
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
-        delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType,
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax,
+            IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc,
+            uint idProcess, uint idThread, uint dwFlags);
+
+        public delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType,
             IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
 
         [StructLayout(LayoutKind.Sequential)]
-        struct RECT
+        public struct RECT
         {
             public int Left, Top, Right, Bottom;
         }
 
-        // 常量
-        const int SW_RESTORE = 9;
-        const int SW_SHOW = 5;
-        static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
-        static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
-        const uint SWP_NOMOVE = 0x0002;
-        const uint SWP_NOSIZE = 0x0001;
-        const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
-        const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
-        const uint WINEVENT_OUTOFCONTEXT = 0x0000;
-        const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+        public const int SW_RESTORE = 9;
+        public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+        public const uint SWP_NOMOVE = 0x0002;
+        public const uint SWP_NOSIZE = 0x0001;
+        public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+        public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    }
 
-        // 全局状态
-        static AutomationBase? _automation;
+    // ═══════════════════════════════════════════════════════════
+    // 微信窗口查找
+    // ═══════════════════════════════════════════════════════════
+
+    static class WeChatWindow
+    {
+        public static IntPtr Find()
+        {
+            IntPtr result = IntPtr.Zero;
+
+            Win32.EnumWindows((hwnd, _) =>
+            {
+                if (!Win32.IsWindowVisible(hwnd)) return true;
+
+                var cls = new System.Text.StringBuilder(256);
+                Win32.GetClassName(hwnd, cls, 256);
+                var cn = cls.ToString();
+
+                // Qt 版本: 类名包含 Qt 且标题为 "微信"
+                if (cn.Contains("Qt"))
+                {
+                    var title = new System.Text.StringBuilder(256);
+                    Win32.GetWindowText(hwnd, title, 256);
+                    if (title.ToString() == "微信" && result == IntPtr.Zero)
+                    {
+                        result = hwnd;
+                    }
+                }
+                // 传统 Win32 版本
+                else if (cn == "WeChatMainWndForPC")
+                {
+                    result = hwnd;
+                }
+
+                return true;
+            }, IntPtr.Zero);
+
+            return result;
+        }
+
+        public static bool Activate(IntPtr hwnd)
+        {
+            if (Win32.IsIconic(hwnd))
+                Win32.ShowWindow(hwnd, Win32.SW_RESTORE);
+            Win32.SetWindowPos(hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0, Win32.SWP_NOMOVE | Win32.SWP_NOSIZE);
+            Thread.Sleep(100);
+            Win32.SetForegroundWindow(hwnd);
+            Thread.Sleep(100);
+            Win32.SetWindowPos(hwnd, Win32.HWND_NOTOPMOST, 0, 0, 0, 0, Win32.SWP_NOMOVE | Win32.SWP_NOSIZE);
+            return true;
+        }
+
+        public static Win32.RECT GetRect(IntPtr hwnd)
+        {
+            Win32.GetWindowRect(hwnd, out var rect);
+            return rect;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 主程序
+    // ═══════════════════════════════════════════════════════════
+
+    class Program
+    {
         static readonly JsonSerializerOptions _jsonOpts = new()
         {
             WriteIndented = false,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         };
 
+        [STAThread]
         static int Main(string[] args)
         {
             if (args.Length == 0)
             {
                 Console.Error.WriteLine("用法: WeChatUIA.exe <command>");
-                Console.Error.WriteLine("命令: dump-tree | activate | monitor | check-login | get-window-rect");
+                Console.Error.WriteLine("命令: dump-tree | check-login | activate | monitor | get-rect");
                 return 1;
             }
 
             try
             {
-                switch (args[0].ToLower())
+                return args[0].ToLower() switch
                 {
-                    case "dump-tree":
-                        return CmdDumpTree();
-                    case "activate":
-                        return CmdActivateWindow();
-                    case "monitor":
-                        return CmdMonitorWindow();
-                    case "check-login":
-                        return CmdCheckLogin();
-                    case "get-window-rect":
-                        return CmdGetWindowRect();
-                    default:
-                        Console.Error.WriteLine($"未知命令: {args[0]}");
-                        return 1;
-                }
+                    "dump-tree" => CmdDumpTree(),
+                    "check-login" => CmdCheckLogin(),
+                    "activate" => CmdActivate(),
+                    "monitor" => CmdMonitor(),
+                    "get-rect" => CmdGetRect(),
+                    _ => 1
+                };
             }
             catch (Exception ex)
             {
-                var error = new { error = ex.Message, trace = ex.StackTrace };
+                var error = new { error = ex.Message };
                 Console.WriteLine(JsonSerializer.Serialize(error, _jsonOpts));
                 return 2;
             }
         }
 
-        // ═════════════════════════════════════════════════════
-        // 命令实现
-        // ═════════════════════════════════════════════════════
+        // ═══════════════════════════════════════════════════════
+        // dump-tree: 原生 UIAutomation 遍历控件树
+        // ═══════════════════════════════════════════════════════
 
-        /// <summary>
-        /// dump-tree: 输出完整控件树 JSON
-        /// </summary>
         static int CmdDumpTree()
         {
-            if (!AttachToWeChat(out var window, out var root))
+            var hwnd = WeChatWindow.Find();
+            if (hwnd == IntPtr.Zero)
             {
-                Console.Error.WriteLine("无法附着微信窗口");
+                Console.Error.WriteLine("未找到微信窗口");
                 return 1;
             }
 
-            var treeInfo = BuildElementTree(root);
-            var rect = GetWindowRect(window);
+            // ★ 关键步骤: AutomationElement.FromHandle() 会触发微信的无障碍模式
+            // 微信检测到 UIAutomationClient 附着后，会加载完整控件 Provider
+            AutomationElement root;
+            try
+            {
+                root = AutomationElement.FromHandle(hwnd);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"无法附着微信窗口: {ex.Message}");
+                return 1;
+            }
 
+            // 等待微信加载完整控件树（无障碍模式需要时间激活）
+            Thread.Sleep(500);
+
+            // 强制刷新——遍历 ControlView 触发 Provider 加载
+            var walker = TreeWalker.ControlViewWalker;
+            var dummy = walker.GetFirstChild(root);
+            Thread.Sleep(200);
+
+            // 现在拿到完整的树
+            var treeInfo = BuildTree(root, walker, 0, 30);
+
+            var rect = WeChatWindow.GetRect(hwnd);
             var output = new TreeOutput
             {
                 Window = new WindowInfo
                 {
                     Left = rect.Left, Top = rect.Top,
                     Right = rect.Right, Bottom = rect.Bottom,
-                    Title = window.Title,
-                    ClassName = window.ClassName,
-                    IsMinimized = IsIconic(window.Properties.NativeWindowHandle),
-                    IsVisible = !window.IsOffscreen,
+                    Title = "微信", ClassName = "Qt",
+                    IsMinimized = Win32.IsIconic(hwnd),
                     Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 },
                 RootElement = treeInfo,
@@ -226,250 +294,20 @@ namespace WeChatUIA
             return 0;
         }
 
-        /// <summary>
-        /// activate: 激活微信窗口到前台
-        /// </summary>
-        static int CmdActivateWindow()
-        {
-            var hwnd = FindWindow("WeChatMainWndForPC", "微信");
-            if (hwnd == IntPtr.Zero)
-            {
-                Console.Error.WriteLine("未找到微信窗口");
-                return 1;
-            }
-
-            if (IsIconic(hwnd))
-                ShowWindow(hwnd, SW_RESTORE);
-
-            // 短暂置顶后取消（确保窗口可见但不霸占屏幕）
-            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-            Thread.Sleep(100);
-            SetForegroundWindow(hwnd);
-            Thread.Sleep(100);
-            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-
-            var result = new { success = true, message = "微信窗口已激活" };
-            Console.WriteLine(JsonSerializer.Serialize(result, _jsonOpts));
-            return 0;
-        }
-
-        /// <summary>
-        /// monitor: 持续监控窗口位置变化
-        /// </summary>
-        static int CmdMonitorWindow()
-        {
-            var hwnd = FindWindow("WeChatMainWndForPC", "微信");
-            if (hwnd == IntPtr.Zero)
-            {
-                Console.Error.WriteLine("未找到微信窗口");
-                return 1;
-            }
-
-            // 注册窗口事件 Hook
-            uint processId;
-            GetWindowThreadProcessId(hwnd, out processId);
-            uint threadId = GetWindowThreadProcessId(hwnd, out _);
-
-            var hook = SetWinEventHook(
-                EVENT_OBJECT_LOCATIONCHANGE,
-                EVENT_OBJECT_LOCATIONCHANGE,
-                IntPtr.Zero,
-                (hHook, eventType, hWnd, idObject, idChild, dwEventThread, dwmsEventTime) =>
-                {
-                    if (hWnd != hwnd) return;
-
-                    var rect = new RECT();
-                    if (GetWindowRect(hwnd, out rect))
-                    {
-                        var info = new WindowInfo
-                        {
-                            Left = rect.Left, Top = rect.Top,
-                            Right = rect.Right, Bottom = rect.Bottom,
-                            Title = "微信",
-                            IsMinimized = IsIconic(hwnd),
-                            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        };
-                        Console.WriteLine(JsonSerializer.Serialize(info, _jsonOpts));
-                    }
-                },
-                0, 0,
-                WINEVENT_OUTOFCONTEXT
-            );
-
-            if (hook == IntPtr.Zero)
-            {
-                Console.Error.WriteLine("无法注册窗口事件 Hook");
-                return 1;
-            }
-
-            // 初始输出
-            var initialRect = new RECT();
-            GetWindowRect(hwnd, out initialRect);
-            var initial = new WindowInfo
-            {
-                Left = initialRect.Left, Top = initialRect.Top,
-                Right = initialRect.Right, Bottom = initialRect.Bottom,
-                Title = "微信",
-                IsMinimized = IsIconic(hwnd),
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            };
-            Console.WriteLine(JsonSerializer.Serialize(initial, _jsonOpts));
-
-            // 持续运行，等待外部 kill
-            Console.Error.WriteLine("监控中... (按 Ctrl+C 停止)");
-            while (true)
-            {
-                Thread.Sleep(100);
-                // Windows 消息循环由 SetWinEventHook 内部处理
-            }
-        }
-
-        /// <summary>
-        /// check-login: 检查微信是否已登录（通过控件树快速扫描）
-        /// </summary>
-        static int CmdCheckLogin()
-        {
-            if (!AttachToWeChat(out var window, out var root))
-            {
-                var result = new LoginCheckResult
-                {
-                    IsLoggedIn = false,
-                    DetectedPage = "微信未运行",
-                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                };
-                Console.WriteLine(JsonSerializer.Serialize(result, _jsonOpts));
-                return 0;
-            }
-
-            // 遍历控件树，查找导航栏标签
-            // 已登录的微信首页有聊天/通讯录/朋友圈等导航按钮
-            var navLabels = new List<string>();
-            var expectedLabels = new[] { "聊天", "通讯录", "朋友圈" };
-
-            CollectNavLabels(root, navLabels, expectedLabels);
-
-            bool isLoggedIn = expectedLabels.Any(l => navLabels.Contains(l));
-
-            string detectedPage = isLoggedIn ? "微信主界面" : "登录页面或未知页面";
-
-            var loginResult = new LoginCheckResult
-            {
-                IsLoggedIn = isLoggedIn,
-                DetectedPage = detectedPage,
-                NavLabels = navLabels,
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            };
-
-            Console.WriteLine(JsonSerializer.Serialize(loginResult, _jsonOpts));
-            return 0;
-        }
-
-        /// <summary>
-        /// get-window-rect: 获取窗口位置和尺寸
-        /// </summary>
-        static int CmdGetWindowRect()
-        {
-            var hwnd = FindWindow("WeChatMainWndForPC", "微信");
-            if (hwnd == IntPtr.Zero)
-            {
-                Console.Error.WriteLine("未找到微信窗口");
-                return 1;
-            }
-
-            var rect = new RECT();
-            GetWindowRect(hwnd, out rect);
-
-            var info = new WindowInfo
-            {
-                Left = rect.Left, Top = rect.Top,
-                Right = rect.Right, Bottom = rect.Bottom,
-                Title = "微信",
-                ClassName = "WeChatMainWndForPC",
-                IsMinimized = IsIconic(hwnd),
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            };
-
-            Console.WriteLine(JsonSerializer.Serialize(info, _jsonOpts));
-            return 0;
-        }
-
-        // ═════════════════════════════════════════════════════
-        // 核心辅助方法
-        // ═════════════════════════════════════════════════════
-
-        /// <summary>
-        /// 附着微信窗口 + 触发无障碍模式 + 返回根元素
-        /// </summary>
-        static bool AttachToWeChat(out Window window, out AutomationElement root)
-        {
-            window = null!;
-            root = null!;
-
-            try
-            {
-                var processes = Process.GetProcessesByName("WeChat");
-                if (processes.Length == 0)
-                {
-                    Console.Error.WriteLine("微信进程未运行");
-                    return false;
-                }
-
-                var process = processes[0];
-                var hwnd = process.MainWindowHandle;
-                if (hwnd == IntPtr.Zero)
-                {
-                    Console.Error.WriteLine("微信主窗口句柄为空");
-                    return false;
-                }
-
-                // 初始化 UIA3 automation
-                _automation = new UIA3Automation();
-
-                // 附着到微信窗口 —— 这一步触发无障碍模式
-                var app = FlaUI.Core.Application.Attach(process.Id);
-                window = app.GetMainWindow(_automation);
-
-                if (window == null)
-                {
-                    Console.Error.WriteLine("无法附着到微信主窗口");
-                    return false;
-                }
-
-                // 确保窗口可见
-                if (IsIconic(hwnd))
-                {
-                    ShowWindow(hwnd, SW_RESTORE);
-                    Thread.Sleep(300);
-                    window = app.GetMainWindow(_automation)!;
-                }
-
-                root = window;
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"附着失败: {ex.Message}");
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// 递归构建控件树信息
-        /// </summary>
-        static UIElementInfo BuildElementTree(AutomationElement element, int maxDepth = 20)
+        static UIElementInfo BuildTree(AutomationElement element, TreeWalker walker, int depth, int maxDepth)
         {
             var info = new UIElementInfo();
 
             try
             {
-                info.ControlType = element.ControlType.ToString();
-                info.Name = element.Name ?? "";
-                info.AutomationId = element.AutomationId ?? "";
-                info.ClassName = element.ClassName ?? "";
-                info.IsEnabled = element.IsEnabled;
-                info.IsOffscreen = element.IsOffscreen;
+                info.ControlType = element.Current.ControlType.ProgrammaticName.Replace("ControlType.", "");
+                info.Name = element.Current.Name ?? "";
+                info.AutomationId = element.Current.AutomationId ?? "";
+                info.ClassName = element.Current.ClassName ?? "";
+                info.IsEnabled = element.Current.IsEnabled;
+                info.IsOffscreen = element.Current.IsOffscreen;
 
-                var rect = element.BoundingRectangle;
+                var rect = element.Current.BoundingRectangle;
                 if (!rect.IsEmpty)
                 {
                     info.X = (int)rect.X;
@@ -478,65 +316,48 @@ namespace WeChatUIA
                     info.Height = (int)rect.Height;
                 }
             }
-            catch { /* 某些属性可能不可访问 */ }
+            catch (ElementNotAvailableException) { return info; }
+            catch { /* some props may not be available */ }
 
-            // 递归子元素
-            if (maxDepth > 0)
+            if (depth < maxDepth)
             {
                 try
                 {
-                    // 使用 ControlViewWalker 过滤布局元素
-                    var walker = _automation!.TreeWalkerFactory.GetControlViewWalker();
                     var child = walker.GetFirstChild(element);
-                    int childCount = 0;
+                    int count = 0;
 
-                    while (child != null && childCount < 500) // 限制防止溢出
+                    while (child != null && count < 500)
                     {
-                        var childInfo = BuildElementTree(child, maxDepth - 1);
-                        if (childInfo.ControlType != "")
+                        var childInfo = BuildTree(child, walker, depth + 1, maxDepth);
+                        // 只保留有意义的元素
+                        if (!string.IsNullOrEmpty(childInfo.ControlType))
                             info.Children.Add(childInfo);
 
                         child = walker.GetNextSibling(child);
-                        childCount++;
+                        count++;
+                    }
+
+                    // WeChat 4.x 元素可能在 RawView 中
+                    if (count == 0 && depth < 2)
+                    {
+                        var rawWalker = TreeWalker.RawViewWalker;
+                        child = rawWalker.GetFirstChild(element);
+                        while (child != null && count < 500)
+                        {
+                            var childInfo = BuildTree(child, rawWalker, depth + 1, maxDepth);
+                            if (!string.IsNullOrEmpty(childInfo.ControlType))
+                                info.Children.Add(childInfo);
+                            child = rawWalker.GetNextSibling(child);
+                            count++;
+                        }
                     }
                 }
-                catch { /* 遍历可能不完全 */ }
+                catch { }
             }
 
             return info;
         }
 
-        /// <summary>
-        /// 收集导航栏标签（用于登录检测）
-        /// </summary>
-        static void CollectNavLabels(AutomationElement element, List<string> found,
-            string[] targets, int depth = 0)
-        {
-            if (depth > 8 || found.Count >= targets.Length) return;
-
-            try
-            {
-                var name = element.Name ?? "";
-                if (targets.Any(t => t == name))
-                    found.Add(name);
-
-                var walker = _automation!.TreeWalkerFactory.GetControlViewWalker();
-                var child = walker.GetFirstChild(element);
-                int count = 0;
-
-                while (child != null && count < 300)
-                {
-                    CollectNavLabels(child, found, targets, depth + 1);
-                    child = walker.GetNextSibling(child);
-                    count++;
-                }
-            }
-            catch { }
-        }
-
-        /// <summary>
-        /// 统计控件树元素总数
-        /// </summary>
         static int CountElements(UIElementInfo element)
         {
             int count = 1;
@@ -545,19 +366,135 @@ namespace WeChatUIA
             return count;
         }
 
-        /// <summary>
-        /// 获取窗口矩形
-        /// </summary>
-        static RECT GetWindowRect(Window window)
+        // ═══════════════════════════════════════════════════════
+        // check-login: 检测是否已登录
+        // ═══════════════════════════════════════════════════════
+
+        static int CmdCheckLogin()
         {
-            var rect = new RECT();
-            var hwnd = window.Properties.NativeWindowHandle;
-            if (hwnd != IntPtr.Zero)
-                GetWindowRect(hwnd, out rect);
-            return rect;
+            var hwnd = WeChatWindow.Find();
+            if (hwnd == IntPtr.Zero)
+            {
+                var r = new LoginCheckResult { IsLoggedIn = false, DetectedPage = "微信未运行",
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() };
+                Console.WriteLine(JsonSerializer.Serialize(r, _jsonOpts));
+                return 0;
+            }
+
+            try
+            {
+                var root = AutomationElement.FromHandle(hwnd);
+                Thread.Sleep(300); // 等微信响应
+
+                var walker = TreeWalker.ControlViewWalker;
+                var navLabels = new List<string>();
+                var targets = new[] { "聊天", "通讯录", "朋友圈", "视频号" };
+
+                CollectNavLabels(root, walker, navLabels, targets, 0);
+
+                // ControlView 没找到的话，尝试 RawView
+                if (navLabels.Count == 0)
+                {
+                    var rawWalker = TreeWalker.RawViewWalker;
+                    CollectNavLabels(root, rawWalker, navLabels, targets, 0);
+                }
+
+                bool loggedIn = navLabels.Any();
+                var result = new LoginCheckResult
+                {
+                    IsLoggedIn = loggedIn,
+                    DetectedPage = loggedIn ? "微信主界面" : "登录页面或未知页面",
+                    NavLabels = navLabels,
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                };
+
+                Console.WriteLine(JsonSerializer.Serialize(result, _jsonOpts));
+            }
+            catch (Exception ex)
+            {
+                var r = new LoginCheckResult { IsLoggedIn = false, DetectedPage = $"异常: {ex.Message}",
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() };
+                Console.WriteLine(JsonSerializer.Serialize(r, _jsonOpts));
+            }
+
+            return 0;
         }
 
-        [DllImport("user32.dll")]
-        static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        static void CollectNavLabels(AutomationElement element, TreeWalker walker,
+            List<string> found, string[] targets, int depth)
+        {
+            if (depth > 15 || found.Count >= targets.Length) return;
+
+            try
+            {
+                var name = element.Current.Name ?? "";
+                if (!string.IsNullOrEmpty(name) && targets.Contains(name))
+                    found.Add(name);
+
+                var child = walker.GetFirstChild(element);
+                int count = 0;
+                while (child != null && count < 300)
+                {
+                    CollectNavLabels(child, walker, found, targets, depth + 1);
+                    child = walker.GetNextSibling(child);
+                    count++;
+                }
+            }
+            catch { }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // 其他命令
+        // ═══════════════════════════════════════════════════════
+
+        static int CmdActivate()
+        {
+            var hwnd = WeChatWindow.Find();
+            if (hwnd == IntPtr.Zero) { Console.Error.WriteLine("未找到微信窗口"); return 1; }
+            WeChatWindow.Activate(hwnd);
+            Console.WriteLine("{\"success\":true}");
+            return 0;
+        }
+
+        static int CmdMonitor()
+        {
+            var hwnd = WeChatWindow.Find();
+            if (hwnd == IntPtr.Zero) { Console.Error.WriteLine("未找到微信窗口"); return 1; }
+
+            Win32.GetWindowThreadProcessId(hwnd, out uint pid);
+            uint tid = Win32.GetWindowThreadProcessId(hwnd, out _);
+
+            Win32.SetWinEventHook(Win32.EVENT_OBJECT_LOCATIONCHANGE, Win32.EVENT_OBJECT_LOCATIONCHANGE,
+                IntPtr.Zero, (h, evt, w, idObj, idChild, evtTid, time) =>
+                {
+                    if (w != hwnd) return;
+                    var rect = WeChatWindow.GetRect(hwnd);
+                    var info = new WindowInfo
+                    {
+                        Left = rect.Left, Top = rect.Top, Right = rect.Right, Bottom = rect.Bottom,
+                        Title = "微信", IsMinimized = Win32.IsIconic(hwnd),
+                        Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    };
+                    Console.WriteLine(JsonSerializer.Serialize(info, _jsonOpts));
+                }, pid, tid, Win32.WINEVENT_OUTOFCONTEXT);
+
+            Console.Error.WriteLine("监控中...");
+            while (true) { Thread.Sleep(100); }
+        }
+
+        static int CmdGetRect()
+        {
+            var hwnd = WeChatWindow.Find();
+            if (hwnd == IntPtr.Zero) { Console.Error.WriteLine("未找到微信窗口"); return 1; }
+            var rect = WeChatWindow.GetRect(hwnd);
+            var info = new WindowInfo
+            {
+                Left = rect.Left, Top = rect.Top, Right = rect.Right, Bottom = rect.Bottom,
+                Title = "微信", ClassName = "Qt", IsMinimized = Win32.IsIconic(hwnd),
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            };
+            Console.WriteLine(JsonSerializer.Serialize(info, _jsonOpts));
+            return 0;
+        }
     }
 }

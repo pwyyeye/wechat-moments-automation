@@ -269,7 +269,7 @@ class WeChatOCREngine:
     微信原生 OCR 引擎 —— 通过 protobuf + Mojo IPC 调用 WeChatOCR.exe。
 
     使用方式：
-        engine = WeChatOCREngine(wechat_dir=r"C:\\Program Files\\Tencent\\WeChat")
+        engine = WeChatOCREngine(wechat_dir=r"C:\\Program Files\\Tencent\\Weixin")
         result = engine.recognize("screenshot.png")
         for line in result:
             print(f"[{line.confidence:.2f}] {line.text} @ ({line.x}, {line.y})")
@@ -280,35 +280,51 @@ class WeChatOCREngine:
         Args:
             wechat_dir: 微信安装目录
         """
-        self._wechat_dir = wechat_dir or r"C:\Program Files\Tencent\WeChat"
+        self._wechat_dir = wechat_dir or self._detect_wechat_dir()
         self._ocr_exe_path = None
         self._mmmojo_dll_path = None
         self._model_dir = None
         self._process = None
         self._available = False
-
         self._locate_wechat_ocr()
+
+    @staticmethod
+    def _detect_wechat_dir() -> str:
+        """自动检测微信安装目录"""
+        from ..executor.wechat_discovery import discover_from_window
+        env = discover_from_window()
+        return str(env.install_dir) if env else ""
 
     def _locate_wechat_ocr(self):
         """查找微信 OCR 组件的路径"""
         wechat_path = Path(self._wechat_dir)
 
-        # WeChat 3.x: WeChatOCR.exe 在版本子目录下
+        # WeChat 3.x: WeChatOCR.exe /.bin 在版本子目录下
         # WeChat 4.x: wxocr.dll 在版本子目录下
         search_patterns = [
             wechat_path / "WeChatOCR.exe",
+            wechat_path / "WeChatOCR.bin",
             wechat_path / "[WeChat]_x64" / "WeChatOCR.exe",
+            wechat_path / "[WeChat]_x64" / "WeChatOCR.bin",
             wechat_path / "wxocr.dll",
             wechat_path / "[WeChat]_x64" / "wxocr.dll",
         ]
 
-        # 也扫描版本子目录
+        # 也扫描所有子目录（含无括号版本号目录如 4.1.10.31）
         for d in wechat_path.iterdir():
             if d.is_dir():
-                search_patterns.extend([
-                    d / "WeChatOCR.exe",
-                    d / "wxocr.dll",
-                ])
+                for name in ['WeChatOCR.exe', 'WeChatOCR.bin', 'WeChatOcr.bin',
+                            'wxocr.dll', 'mmmojo_64.dll', 'mmmojo.dll']:
+                    fp = d / name
+                    if fp.exists():
+                        search_patterns.append(fp)
+
+        # 搜索模型文件
+        for d in wechat_path.iterdir():
+            if d.is_dir():
+                for f in d.rglob("*.bin"):
+                    # 也扫描子子目录
+                    pass
 
         for pattern in search_patterns:
             if pattern.exists():

@@ -60,43 +60,14 @@ class Operator:
     # 窗口管理
     # ══════════════════════════════════════════════════════════
 
-    # 微信可能的窗口类名（按版本不同）
-    _WECHAT_WINDOW_CLASSES = [
-        "WeChatMainWndForPC",   # 旧版 (3.x 早期)
-        "Qt51514QWindowIcon",   # Qt 5.15.14 版 (3.9.x)
-        "Qt5152QWindowIcon",    # Qt 5.15.2 版
-        "Qt6*QWindowIcon",      # Qt 6.x 版 (4.x)
-    ]
-
     def find_wechat_window(self) -> bool:
-        """查找微信窗口（支持多种窗口类名）"""
-        # 方法1: 按类名查找
-        for cls in self._WECHAT_WINDOW_CLASSES:
-            if '*' in cls:
-                import fnmatch
-                def callback(hwnd, results):
-                    if fnmatch.fnmatch(win32gui.GetClassName(hwnd), cls):
-                        results.append(hwnd)
-                results = []
-                win32gui.EnumWindows(callback, results)
-                if results:
-                    self._wechat_hwnd = results[0]
-                    logger.info(f"找到微信窗口: hwnd={self._wechat_hwnd} (Qt通配)")
-                    return True
-            else:
-                hwnd = win32gui.FindWindow(cls, None)
-                if hwnd:
-                    self._wechat_hwnd = hwnd
-                    logger.info(f"找到微信窗口: hwnd={hwnd} (类={cls})")
-                    return True
-
-        # 方法2: 按标题查找
-        hwnd = win32gui.FindWindow(None, "微信")
-        if hwnd:
-            self._wechat_hwnd = hwnd
-            logger.info(f"找到微信窗口: hwnd={hwnd} (标题=微信)")
+        """查找微信窗口（自动发现，无硬编码类名）"""
+        from .wechat_discovery import _find_wechat_windows
+        windows = _find_wechat_windows()
+        if windows:
+            self._wechat_hwnd = windows[0][0]
+            logger.info(f"找到微信窗口: hwnd={self._wechat_hwnd}")
             return True
-
         logger.error("未找到微信窗口，请确认微信已启动")
         return False
         return True
@@ -337,16 +308,24 @@ class Operator:
 
         wechat_path = self._config.get(
             'wechat_path',
+            r'C:\Program Files\Tencent\Weixin\Weixin.exe',
             r'C:\Program Files\Tencent\WeChat\WeChat.exe'
         )
 
         try:
-            # 杀掉微信进程
-            subprocess.run(['taskkill', '/f', '/im', 'WeChat.exe'],
-                           capture_output=True, check=False)
+            # 杀掉微信进程（尝试两个可能的进程名）
+            for proc_name in ['WeChat.exe', 'Weixin.exe']:
+                subprocess.run(['taskkill', '/f', '/im', proc_name],
+                               capture_output=True, check=False)
             time.sleep(2.0)
 
             # 重新启动
+            exe_path = Path(wechat_path)
+            if not exe_path.exists():
+                # 尝试 Weixin.exe
+                alt = exe_path.parent / 'Weixin.exe'
+                if alt.exists():
+                    wechat_path = str(alt)
             subprocess.Popen([wechat_path])
             time.sleep(5.0)  # 等微信启动
 

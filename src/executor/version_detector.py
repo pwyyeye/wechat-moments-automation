@@ -58,7 +58,12 @@ class VersionDetector:
     """
 
     def __init__(self, wechat_dir: str = None):
-        self._wechat_dir = wechat_dir or r"C:\Program Files\Tencent\WeChat"
+        if wechat_dir:
+            self._wechat_dir = wechat_dir
+        else:
+            from .wechat_discovery import discover_from_window
+            env = discover_from_window()
+            self._wechat_dir = str(env.install_dir) if env else ""
         self._last_known_version: Optional[WeChatVersion] = None
         self._load_last_version()
 
