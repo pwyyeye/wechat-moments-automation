@@ -1,288 +1,169 @@
-# 版本无关的 PC 微信朋友圈自动化系统 — 设计文档
+# 微信朋友圈自动化系统
 
-## 一、设计目标与核心约束
+版本无关的 PC 微信朋友圈自动化。事件驱动架构 + 语义级定位 + 三层集成。
 
-### 约束条件
-
-```
-❌ 不锁定微信版本（微信随时可能自动更新）
-❌ 不锁定屏幕 DPI/分辨率
-❌ 不注入微信进程（Hook、DLL 注入）
-❌ 不破解通信协议
-✅ 仅使用操作系统公开 API（截图、模拟输入）
-```
-
-### 设计目标
-
-| 指标 | 目标值 | 说明 |
-|------|--------|------|
-| 单步定位成功率 | ≥ 95% | OCR + 特征匹配 + 锚点三级兜底 |
-| 完整发布流程成功率 | ≥ 90% | 含错误恢复和重试 |
-| 版本兼容性 | 微信 3.9.x ~ 4.x | 不依赖控件树和精确像素 |
-| DPI 兼容性 | 100% / 125% / 150% | OCR 和 SIFT 均不受缩放影响 |
-| 风控感知 | 实时 | 异步轮询 + 自适应降级 |
+[![Tests](https://img.shields.io/badge/tests-44%20passed-brightgreen)]()
+[![Python](https://img.shields.io/badge/python-3.10+-blue)]()
+[![.NET](https://img.shields.io/badge/.NET-10.0-purple)]()
+[![License](https://img.shields.io/badge/license-MIT-green)]()
 
 ---
 
-## 二、核心设计思想：从像素级匹配到语义级定位
+## 快速开始
 
-传统方案失败的根本原因是**版本相关的定位依赖**：
+```bash
+# 一键安装
+setup.bat
 
-```
-旧：找"特定版本的特定像素块"         → 版本一变就全崩
-新：找"不随版本变化的语义特征"       → 版本更新只影响小部分
-```
+# 系统自检
+venv\Scripts\activate
+python main.py --test
 
-三个语义维度：
+# 发朋友圈
+python main.py --text "今天天气真好"
 
-```
-文字语义 → OCR 找"朋友圈""发表"等文字标签     → 覆盖 80% 场景
-图形语义 → SIFT/ORB 找图标形状特征             → 覆盖纯图标元素
-空间语义 → 多锚点相对定位推断未知元素位置      → 覆盖输入框等无标签元素
-```
+# 交互模式
+python main.py --interactive
 
----
+# 定时调度
+python main.py --schedule
 
-## 三、系统架构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      朋友圈发布主控                          │
-│                   (moments/publisher.py)                     │
-│               状态机驱动 + 完整流程编排                       │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-          ┌────────────────┼────────────────┐
-          │                │                │
-    ┌─────▼─────┐   ┌──────▼──────┐   ┌─────▼─────┐
-    │  定位层    │   │   执行层     │   │  监控层   │
-    │ (locator/) │   │ (executor/)  │   │ (monitor/) │
-    │            │   │              │   │            │
-    │·OCR定位    │   │·类人延迟模拟 │   │·风控检测   │
-    │·特征匹配   │   │·贝塞尔轨迹   │   │·弹窗处理   │
-    │·锚点推算   │   │·键盘时序模拟 │   │·自适应降级 │
-    │·策略路由   │   │·操作序列随机 │   │·信号记录   │
-    └─────┬──────┘   └──────┬──────┘   └─────┬──────┘
-          │                │                │
-          └────────────────┼────────────────┘
-                           │
-                    ┌──────▼──────┐
-                    │   校准层     │
-                    │(calibrator) │
-                    │             │
-                    │·启动时自动   │
-                    │ 扫描界面     │
-                    │·建立坐标映射 │
-                    │·版本无关     │
-                    └─────────────┘
+# 查看状态
+python main.py --status
 ```
 
----
+## 核心特性
 
-## 四、模块详解
-
-### 4.1 定位层 (locator/)
-
-#### 4.1.1 OCR 文字定位器 (`ocr_locator.py`)
-
-**职责**：通过文字语义查找界面元素坐标。
-
-**接口**：
-```python
-class OCRLocator:
-    def find_text(target: str) -> List[Candidate]
-    def click_text(target: str) -> bool
-    def wait_text(target: str, timeout: float) -> Optional[Candidate]
-    def get_all_text() -> List[TextBlock]
-```
-
-**策略**：
-- 首选微信原生 OCR 引擎（`WeChatOCR.exe` 独立调用，零依赖微信 GUI）
-- 备选 PaddleOCR（无需微信安装目录）
-- 结果按置信度排序，去重（合并相邻的同一文字检测框）
-
-#### 4.1.2 特征点匹配定位器 (`feature_locator.py`)
-
-**职责**：通过图形语义（形状特征）定位纯图标按钮。
-
-**接口**：
-```python
-class FeatureLocator:
-    def locate(template_path: str) -> Optional[Point]
-    def locate_best(template_paths: List[str]) -> Optional[Point]
-```
-
-**策略**：
-- 首选 ORB（开源、快速、免专利）
-- 备选 SIFT（精度更高，需编译 OpenCV contrib）
-- Lowe's ratio test (ratio=0.65) 过滤误匹配
-- RANSAC 单应性矩阵精确定位
-
-#### 4.1.3 多锚点校准器 (`anchor_locator.py`)
-
-**职责**：运行时自动扫描界面，建立当前版本的坐标映射。
-
-**接口**：
-```python
-class AnchorCalibrator:
-    def calibrate() -> CoordinateMapping
-    def locate_relative(anchor: str, dx: int, dy: int) -> Point
-```
-
-**锚点优先级**：
-1. OCR 找到的导航栏标签（"聊天""通讯录""朋友圈"）——极高稳定性
-2. 特征匹配找到的图标（头像、相机图标）——高稳定性
-3. 窗口边框和尺寸——备用
-
-#### 4.1.4 策略路由器 (`router.py`)
-
-**职责**：按优先级调度定位策略。
-
-**逻辑**：
-```
-find_element(target):
-  1. 如果是文字标签 → OCR 定位
-  2. 如果是图标 → 特征匹配定位
-  3. 如果上面都失败 → 锚点相对定位
-  4. 全局失败 → 记录截图、抛出异常
-```
-
-### 4.2 执行层 (executor/)
-
-#### 4.2.1 类人行为模拟 (`human_sim.py`)
-
-**核心算法**：
-
-| 行为 | 算法 | 参数 |
-|------|------|------|
-| 操作延迟 | Gamma(shape=3, scale=base/3) + 均匀噪声 | base=用户设定 |
-| 鼠标轨迹 | 二次贝塞尔 + 每步 ±2px 随机抖动 | 控制点随机偏移 |
-| 键盘输入 | 逐字符，高频字快/标点慢，有自然波动 | WPM=60-100 |
-| 多余操作 | 30% 概率插入随机微小移动 | — |
-
-#### 4.2.2 状态机 (`state_machine.py`)
-
-```
-IDLE → ENTERING_MOMENTS → TYPING_CONTENT → ADDING_IMAGES
-      → CONFIRMING_PUBLISH → VERIFYING_SUCCESS → DONE
-
-每个状态：
-  - on_enter(): 定位目标元素
-  - execute(): 执行操作
-  - verify(): 验证结果（OCR 确认下一页面的特征文字出现）
-  - on_error(): 记录失败 + 重试/降级/放弃
-```
-
-### 4.3 监控层 (monitor/)
-
-#### 4.3.1 风控信号检测 (`risk_detector.py`)
-
-**检测信号**：
-- 强制登出弹窗
-- "操作太频繁"警告
-- 功能静默失效（操作后无响应）
-- 登录态过期
-
-**响应策略**：指数退避冷却（2, 4, 8, 16, 32 分钟）
-
-#### 4.3.2 弹窗处理器 (`popup_handler.py`)
-
-**处理队列**：
-1. 阻断性弹窗（版本更新、强制登出）→ 立即处理
-2. 非阻断弹窗（新消息、系统通知）→ 后台清理
-
-### 4.4 恢复层 (recovery/)
-
-#### 4.4.1 异常恢复 (`error_recovery.py`)
-
-```
-异常分类 → 恢复策略
-────────────────────
-定位失败 → 降低置信度重试 → 扩大搜索区域 → 多尺度匹配
-操作超时 → 窗口激活 → 等待动画完成 → 重试
-弹窗阻断 → 弹窗处理 → 标记 → 继续
-微信崩溃 → 重启微信 → 恢复窗口位置 → 继续
-```
-
----
-
-## 五、数据流
-
-```
-[启动]
-    │
-    ▼
-[校准] → OCR 扫描导航栏 → 特征匹配图标 → 生成坐标映射
-    │
-    ▼
-[任务循环]
-    │
-    ├─→ [前置检查] → 窗口激活 + 弹窗清理 + 风控检查
-    │
-    ├─→ [步骤执行]
-    │       │
-    │       ├─ 定位器查找目标 → 成功 → 执行操作 → 验证结果
-    │       │                  │
-    │       │                  └─ 失败 → 降级策略 → 仍失败 → 异常恢复
-    │       │
-    │       └─ 验证结果 → 成功 → 进入下一步
-    │                   │
-    │                   └─ 失败 → 重试（最多 3 次）
-    │
-    ├─→ [任务间] → 随机延迟 30-120s + 指标记录
-    │
-    └─→ [下一任务]
-```
-
----
-
-## 六、文件结构
-
-```
-wechat-moments-automation/
-├── README.md                     # 本文件
-├── requirements.txt              # Python 依赖
-├── config/
-│   └── settings.yaml             # 全局配置
-├── src/
-│   ├── __init__.py
-│   ├── calibrator.py             # 运行时自动校准
-│   ├── locator/
-│   │   ├── __init__.py
-│   │   ├── ocr_locator.py        # OCR 文字定位
-│   │   ├── feature_locator.py    # SIFT/ORB 特征匹配
-│   │   ├── anchor_locator.py     # 多锚点相对定位
-│   │   └── router.py             # 定位策略路由
-│   ├── executor/
-│   │   ├── __init__.py
-│   │   ├── human_sim.py          # 类人行为模拟
-│   │   ├── state_machine.py      # 流程状态机
-│   │   └── operator.py           # 操作执行器
-│   ├── monitor/
-│   │   ├── __init__.py
-│   │   ├── risk_detector.py      # 风控信号检测
-│   │   └── popup_handler.py      # 弹窗处理
-│   ├── recovery/
-│   │   ├── __init__.py
-│   │   └── error_recovery.py     # 异常恢复
-│   └── moments/
-│       ├── __init__.py
-│       └── publisher.py          # 朋友圈发布主控
-├── templates/
-│   └── icons/                    # 图标模板（特征匹配用）
-├── logs/                         # 运行日志
-└── tests/                        # 测试文件
-```
-
----
-
-## 七、运行环境
-
-| 组件 | 要求 |
+| 特性 | 说明 |
 |------|------|
-| OS | Windows 10+ |
-| Python | 3.10+ |
-| GPU | 不需要（OCR CPU 可运行） |
-| 微信 | PC 版 3.9.x ~ 4.x（任意版本） |
-| 显示器 | ≥ 1920×1080 |
-| 微信状态 | 前台可见，不可最小化 |
+| **版本无关** | OCR 文字语义 + SIFT/ORB 图形语义，不依赖微信控件树 |
+| **事件驱动** | EventBus + Watcher 后台监测，等事件不等时间 |
+| **类人行为** | Gamma 延迟 + 贝塞尔鼠标轨迹 + 键盘时序 + 随机多余动作 |
+| **风控感知** | 自动检测风控信号 + 指数退避冷却 + 静默失效检测 |
+| **多端控制** | CLI + REST API + WebSocket + Telegram/Discord (OpenClaw) + Electron GUI |
+| **自动校准** | 启动时自动扫描界面建立锚点，窗口移动自动重新校准 |
+| **版本追踪** | 检测微信版本变化，自动重建模板库 |
+| **任务持久** | 断点续传 + 定时调度 (cron) + 发布历史 |
+| **通知系统** | Telegram Bot + 邮件 + Windows 系统通知 |
+
+## 架构
+
+```
+Telegram ←→ OpenClaw ←→ Python API Server ←→ Core Engine
+Electron App ←→ Python API Server (HTTP + WebSocket)
+
+Core Engine:
+  EventBus → Watchers (OCR/UIA/Window/Timer)
+           → Publisher (事件驱动状态机)
+           → Locators (OCR → SIFT → Anchor → Template)
+           → Monitors (Risk + Popup)
+           → Recovery (多层级)
+```
+
+## 使用方式
+
+```bash
+# CLI
+python main.py --text "文字内容" --images photo1.jpg
+python main.py --batch posts.txt
+python main.py --interactive
+python main.py --schedule
+python main.py --status
+python main.py --calibrate
+python main.py --extract-templates
+python main.py --test
+
+# API Server
+python -m uvicorn src.api.server:app --port 18080
+
+# API 端点
+POST /api/publish        发布朋友圈
+GET  /api/status         系统状态
+POST /api/schedule       创建定时任务
+GET  /api/history        发布历史
+WS   /ws/events          实时事件流
+```
+
+## 三层集成
+
+### OpenClaw — 消息平台远程控制
+
+在 Telegram/WhatsApp/Discord 中：
+```
+/publish 今天天气真好 | photo.jpg
+/status
+/schedule add 0 9 * * * | 早安
+/history
+```
+
+文件: `integrations/openclaw/wechat-moments-skill.ts`
+
+### Electron 前端 — 基于 sparkle-ref
+
+Dashboard + Composer + Schedule + History，集成指南:
+`integrations/sparkle-frontend/INTEGRATION.md`
+
+### API Server — FastAPI
+
+10 个 REST 端点 + WebSocket 实时事件流，同时为 OpenClaw 和前端服务。
+文件: `src/api/server.py`
+
+## 环境要求
+
+| 组件 | 要求 | 用途 |
+|------|------|------|
+| Python | 3.10+ | 核心引擎 |
+| .NET SDK | 8.0+ (可选) | C# UIA 微服务 |
+| 微信 | PC 版 3.9+ | 目标应用 |
+
+## 安装
+
+```bash
+# 方式 1: 一键脚本
+setup.bat
+
+# 方式 2: 手动
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+cd src/cs_uia_service && dotnet publish -c Release -o publish && cd ../..
+python main.py --test
+```
+
+## 配置
+
+编辑 `config/settings.yaml`：
+
+- OCR 引擎选择 (paddleocr / wechat_native)
+- 类人行为参数 (延迟、鼠标、打字速度)
+- 风控安全 (每日上限、冷却基数)
+- 通知渠道 (Telegram Bot、邮件)
+
+## 测试
+
+```bash
+python -m pytest tests/ -v
+# 44 passed, 0 failed
+```
+
+## 文件结构
+
+```
+src/core/        事件驱动核心 (EventBus + Watchers + Publisher)
+src/api/         FastAPI Server
+src/locator/     版本无关定位 (7 模块)
+src/executor/    执行层 (6 模块)
+src/monitor/     监控层 (3 模块)
+src/recovery/    恢复层
+src/cs_uia_service/  C# UIA 微服务
+integrations/    外部集成 (OpenClaw + Electron)
+tests/           测试 (44 tests)
+```
+
+## 免责声明
+
+本项目仅供技术研究和学习使用。使用自动化工具操作微信可能违反《腾讯微信软件许可及服务协议》，使用者需自行承担风险。
+
+## License
+
+MIT
