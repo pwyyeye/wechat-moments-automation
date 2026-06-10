@@ -3,15 +3,18 @@
 ## 目录
 
 1. [设计哲学](#1-设计哲学)
-2. [架构全景图](#2-架构全景图)
+2. [系统架构](#2-系统架构)
 3. [事件驱动机制](#3-事件驱动机制)
-4. [模块详解](#4-模块详解)
-5. [数据流与状态转换](#5-数据流与状态转换)
-6. [关键技术决策](#6-关键技术决策)
-7. [环境搭建与编译](#7-环境搭建与编译)
-8. [配置文件说明](#8-配置文件说明)
-9. [扩展指南](#9-扩展指南)
-10. [故障排查](#10-故障排查)
+4. [核心模块详解](#4-核心模块详解)
+5. [API Server](#5-api-server)
+6. [OpenClaw 集成](#6-openclaw-集成)
+7. [Electron 前端集成](#7-electron-前端集成)
+8. [数据流与状态转换](#8-数据流与状态转换)
+9. [关键技术决策](#9-关键技术决策)
+10. [环境搭建与编译](#10-环境搭建与编译)
+11. [配置文件说明](#11-配置文件说明)
+12. [扩展指南](#12-扩展指南)
+13. [故障排查](#13-故障排查)
 
 ---
 
@@ -31,83 +34,65 @@
 ❌ 轮询 OCR 扫描                    ✅ Watcher 后台监测 + EventBus 发布
 ```
 
-### 1.2 根本设计思路
+### 1.2 三种语义定位
 
-传统 GUI 自动化的核心问题是**版本相关的定位依赖**：
+传统 GUI 自动化的核心问题是**版本相关的定位依赖**。本系统通过三个语义维度实现版本无关：
 
-```
-旧范式：找"特定版本的特定像素/控件属性" → 版本一变全崩
-新范式：找"不随版本变化的语义特征"     → 版本更新仅需微调
-```
-
-三个语义维度对应三种定位策略：
-
-| 语义维度 | 定位策略 | 覆盖场景 |
-|----------|----------|----------|
-| **文字语义** | OCR 找文字标签（"朋友圈"永远是"朋友圈"） | 80% 带文字的按钮/标签 |
-| **图形语义** | SIFT/ORB 特征点匹配图标形状 | 15% 纯图标的按钮 |
-| **空间语义** | 多锚点相对定位推断未知元素 | 5% 输入框等无标签元素 |
+| 语义维度 | 定位策略 | 覆盖场景 | 版本相关性 |
+|----------|----------|----------|-----------|
+| **文字语义** | OCR 找文字标签（"朋友圈"永远是"朋友圈"） | 80% 带文字的按钮/标签 | 无 |
+| **图形语义** | SIFT/ORB 特征点匹配图标形状 | 15% 纯图标的按钮 | 无（缩放/旋转/光照不变） |
+| **空间语义** | 多锚点相对定位推断未知元素 | 5% 输入框等无标签元素 | 低（窗口尺寸变化时自动校准） |
 
 ### 1.3 事件驱动 vs 传统轮询
 
 ```
 轮询驱动的浪费：
-  click("朋友圈") → sleep(1.5s) → OCR扫描 → sleep(0.5s) → OCR扫描 → 找到了
-      点击               等待          扫            等           扫          继续
-  时间线：[====操作系统已在0.8s完成加载，但我们还在sleep等轮询间隔====]
+  click → sleep(1.5s) → OCR扫描 → sleep(0.5s) → OCR扫描 → 找到了
+  时间线：[操作系统已在0.8s完成加载，但我们还在sleep等轮询间隔]
 
 事件驱动的精准：
-  click("朋友圈") → wait_for(text.appeared("这一刻的想法")) → 继续
-      点击               系统在后台等，事件0.8s到达即响应
-  时间线：   ✓ 零CPU空转  ✓ 响应时间=事件发生时间
+  click → wait_for(text.appeared("这一刻的想法")) → 继续
+  时间线：零CPU空转，响应时间=事件发生时间
 ```
 
 ---
 
-## 2. 架构全景图
+## 2. 系统架构
 
 ### 2.1 五层架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         业务层                                  │
-│    EventDrivenPublisher (src/core/publisher.py)                 │
-│    朋友圈发布流程编排（事件驱动状态机）                          │
+│                      交互层                                     │
+│  Telegram / WhatsApp / Discord ←→ Electron Desktop App          │
 └───────────────────────────┬─────────────────────────────────────┘
-                            │   emit(events) / wait_for(events)
+                            │
+┌───────────────────────────▼─────────────────────────────────────┐
+│                      API 层 (FastAPI)                           │
+│  POST /api/publish  GET /api/status  WS /ws/events             │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
 ┌───────────────────────────▼─────────────────────────────────────┐
 │                      事件驱动核心层                             │
-│    EventBus (src/core/events.py)                                │
-│    ├─ 发布/订阅 + 通配符 + once() + wait_for() + wait_any()     │
-│    └─ 历史记录 + 线程安全                                       │
-│                                                                 │
-│    WatchManager (src/core/watchers.py)                          │
-│    ├─ OCRTextWatcher  ─ 监测屏幕上文字的出现/消失               │
-│    ├─ UIATreeWatcher  ─ 监测 UIA 控件树变化                     │
-│    ├─ WindowWatcher   ─ 监测窗口位置/大小变化 (零轮询)           │
-│    └─ TimerWatcher    ─ 事件驱动的定时器                        │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-        ┌───────────────────┼───────────────────┐
-        │                   │                   │
-┌───────▼──────┐   ┌────────▼───────┐   ┌───────▼──────┐
-│   定位层      │   │    执行层       │   │   监控层      │
-│ (locator/)   │   │  (executor/)   │   │  (monitor/)  │
-│              │   │                │   │              │
-│ OCR 定位     │   │ 类人延迟(Gamma) │   │ 风控信号检测  │
-│ SIFT/ORB匹配  │   │ 贝塞尔鼠标轨迹 │   │ 弹窗自动清理  │
-│ 锚点相对定位  │   │ 键盘时序模拟   │   │ 指数退避冷却  │
-│ 策略路由      │   │ 文件对话框     │   │              │
-│ PE 资源提取   │   │ C# UIA 桥接    │   │              │
-│ Protobuf OCR  │   │                │   │              │
-└───────┬──────┘   └────────┬───────┘   └───────┬──────┘
-        │                   │                   │
-        └───────────────────┼───────────────────┘
-                            │
-┌───────────────────────────▼─────────────────────────────────────┐
+│  EventBus + WatchManager (OCRTextWatcher, UIATreeWatcher,       │
+│  WindowWatcher, TimerWatcher)                                   │
+└───────┬───────────────┬───────────────┬─────────────────────────┘
+        │               │               │
+┌───────▼──────┐ ┌──────▼───────┐ ┌─────▼──────┐
+│   定位层      │ │   执行层      │ │  监控层    │
+│ OCR 定位     │ │ 类人延迟(Gamma)│ │ 风控检测   │
+│ SIFT/ORB匹配  │ │ 贝塞尔鼠标轨迹│ │ 弹窗清理   │
+│ 锚点相对定位  │ │ 键盘时序模拟  │ │ 指数退避   │
+│ 策略路由      │ │ C# UIA 桥接   │ │            │
+│ PE 资源提取   │ │ 文件对话框     │ │            │
+│ Protobuf OCR  │ │               │ │            │
+└───────┬──────┘ └──────┬───────┘ └─────┬──────┘
+        └───────────────┼───────────────┘
+                        │
+┌───────────────────────▼─────────────────────────────────────────┐
 │                      恢复层                                     │
-│    ErrorRecovery (src/recovery/)                                │
-│    多层级异常恢复（定位降级 → 窗口激活 → 进程重启）             │
+│  多层级异常恢复（定位降级 → 窗口激活 → 进程重启）               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -117,12 +102,13 @@
 ┌─────────────────┐     JSON/stdout     ┌──────────────────┐
 │   Python 主控    │◄───────────────────►│  C# UIA 微服务    │
 │                  │   subprocess 调用   │  (WeChatUIA.exe)  │
-│  · 流程编排      │                    │                  │
-│  · OCR/CV 处理   │                    │  · 控件树 dump    │
-│  · 类人模拟      │                    │  · 窗口监控       │
-│  · 风控策略      │                    │  · 无障碍触发     │
-│  · 事件总线      │                    │  · 登录状态检测   │
-└─────────────────┘                    └──────────────────┘
+│ · 流程编排      │                    │                  │
+│ · OCR/CV 处理   │                    │ · 控件树 dump    │
+│ · 类人模拟      │                    │ · 窗口监控       │
+│ · 风控策略      │                    │ · 无障碍触发     │
+│ · 事件总线      │                    │ · 登录状态检测   │
+│ · FastAPI 服务  │                    │                  │
+└────────┬────────┘                    └────────┬─────────┘
          │                                      │
          │         操作系统公开 API              │
          └──────────────┬──────────────────────-┘
@@ -133,370 +119,313 @@
               └───────────────────┘
 ```
 
+### 2.3 集成架构
+
+```
+用户交互层:
+  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐
+  │ Telegram │  │ WhatsApp │  │ Discord  │  │ Electron Desktop │
+  │ /publish │  │ /publish │  │ /publish │  │ (sparkle-ref)    │
+  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────────┬─────────┘
+       │              │             │                  │ IPC invoke
+       └──────────────┼─────────────┘                  │
+                      │                                │
+              ┌───────▼────────┐              ┌────────▼────────┐
+              │   OpenClaw     │   HTTP API   │ Electron Main   │
+              │   Gateway      │◄────────────►│ (IPC handlers)  │
+              │                │              │                 │
+              │ WeChat Moments │              │ 转发到 Python   │
+              │ Skill          │              │ API Server      │
+              └───────┬────────┘              └────────┬────────┘
+                      │                                │
+                      │         HTTP REST               │
+                      └───────────┬────────────────────┘
+                                  │
+              ┌───────────────────▼────────────────────┐
+              │        Python API Server (FastAPI)     │
+              │  REST + WebSocket (localhost:18080)    │
+              └───────────────────┬────────────────────┘
+                                  │
+              ┌───────────────────▼────────────────────┐
+              │           Core Engine                  │
+              │  EventDrivenPublisher + Locators       │
+              └────────────────────────────────────────┘
+```
+
 ---
 
 ## 3. 事件驱动机制
 
-### 3.1 EventBus 设计
-
-事件总线是整个系统的神经中枢。所有组件通过它通信，而不是直接相互调用。
+### 3.1 EventBus 核心 API
 
 ```python
-from src.core.events import EventBus, Event, EventType
+from src.core.events import EventBus, Event, EventType, global_event_bus
 
 bus = EventBus()
 
 # ── 订阅 ──
-bus.on(EventType.TEXT_APPEARED, lambda e: print(f"文字出现: {e}"))
+bus.on(EventType.TEXT_APPEARED, lambda e: handle(e))
 
 # ── 一次性订阅（触发后自动取消） ──
 bus.once(EventType.WINDOW_MOVED, lambda e: recalibrate())
 
+# ── 通配符订阅（接收所有事件） ──
+bus.on_any(lambda e: log_event(e))
+
 # ── 发布 ──
 bus.emit(Event(EventType.TEXT_APPEARED, "OCRWatcher", {
-    'text': '已发送', 'x': 500, 'y': 600
+    'text': '已发送', 'matched': '已发送', 'x': 500, 'y': 600, 'confidence': 0.97
 }))
 
 # ── 等待事件（事件驱动替代 time.sleep） ──
 event = bus.wait_for(EventType.TEXT_APPEARED,
-                     payload_match={'text': '已发送'},
+                     payload_match={'matched': '已发送'},
                      timeout=10.0)
-if event:
-    print("发布成功")  # 事件到达即返回，无轮询
-else:
-    print("超时")
 
 # ── 等待任意事件 ──
-event = bus.wait_any([EventType.TEXT_APPEARED, EventType.TIMER_EXPIRED],
-                     timeout=15.0)
+event = bus.wait_any([EventType.TEXT_APPEARED, EventType.TIMER_EXPIRED], timeout=15.0)
 ```
 
 ### 3.2 事件类型全集
 
-| 事件类型 | 触发源 | 携带数据 |
-|----------|--------|----------|
-| `element.appeared` | UIA Watcher | name, x, y, controlType |
-| `element.vanished` | UIA Watcher | name |
-| `text.appeared` | OCR Watcher | text, matched, x, y, confidence |
-| `text.vanished` | OCR Watcher | text, matched |
-| `window.moved` | WindowWatcher (WinEventHook) | left, top, dx, dy |
-| `window.resized` | WindowWatcher | width, height, dw, dh |
-| `window.minimized` | WindowWatcher | — |
-| `login.lost` | OCR Watcher | detectedPage |
-| `risk.warning` | RiskDetector | cooldown, signal |
-| `risk.critical` | RiskDetector | signal |
-| `popup.detected` | PopupHandler | name, type |
-| `step.started` / `step.completed` / `step.failed` | Publisher | step, elapsed |
-| `publish.confirmed` | Publisher | — |
-| `upload.complete` | OCR Watcher | — |
-| `timer.expired` | TimerWatcher | reason |
+| 事件类型 | 触发源 | 携带数据 | 用途 |
+|----------|--------|----------|------|
+| `element.appeared` | UIA Tree Watcher | name, x, y, controlType | 控件出现 |
+| `element.vanished` | UIA Tree Watcher | name | 控件消失 |
+| `text.appeared` | OCR Text Watcher | text, matched, x, y, confidence | 文字出现 |
+| `text.vanished` | OCR Text Watcher | text, matched | 文字消失 |
+| `window.moved` | Window Watcher | left, top, dx, dy | 窗口移动 |
+| `window.resized` | Window Watcher | width, height, dw, dh | 窗口缩放 |
+| `window.minimized` | Window Watcher | — | 窗口最小化 |
+| `login.lost` | Login Check | detectedPage | 掉线 |
+| `risk.warning` | Risk Detector | cooldown, signal | 风控警告 |
+| `risk.critical` | Risk Detector | signal | 风控严重 |
+| `risk.cooldown.start` | Risk Detector | duration | 冷却开始 |
+| `risk.cooldown.end` | Risk Detector | — | 冷却结束 |
+| `popup.detected` | Popup Handler | name, type | 检测到弹窗 |
+| `popup.dismissed` | Popup Handler | name | 弹窗已关闭 |
+| `step.started` | Publisher | step, task_id | 步骤开始 |
+| `step.completed` | Publisher | step, elapsed | 步骤完成 |
+| `step.failed` | Publisher | step, error, attempt | 步骤失败 |
+| `step.retry` | Publisher | step, attempt, max | 步骤重试 |
+| `publish.confirmed` | Publisher | task_id, elapsed | 发布确认 |
+| `upload.complete` | OCR Watcher | — | 上传完成 |
+| `upload.failed` | OCR Watcher | reason | 上传失败 |
+| `timer.expired` | Timer Watcher | reason | 定时器到期 |
+| `system.error` | Any | error, traceback | 系统错误 |
+| `system.shutdown` | Publisher | — | 系统关闭 |
 
-### 3.3 事件驱动的发布流程
+### 3.3 Watcher 事件源
+
+| Watcher | 监测方式 | 间隔 | 发布的事件 |
+|---------|----------|------|-----------|
+| OCRTextWatcher | OCR 扫描 → diff 当前帧 vs 上一帧 | 1.0s | text.appeared, text.vanished |
+| UIATreeWatcher | UIA dump → diff 控件名集合 | 0.5s | element.appeared, element.vanished |
+| WindowWatcher | SetWinEventHook 系统回调 | 零轮询 | window.moved, window.resized, window.minimized |
+| TimerWatcher | threading.Timer 到期 | 按需 | timer.expired |
+
+### 3.4 事件驱动的发布流程
 
 ```
 IDLE
-  │  publisher.emit(STEP_STARTED)
+  │  emit(STEP_STARTED)
   ▼
 ENTERING_MOMENTS
-  │  operator.click("朋友圈")
-  │       │
-  │       ▼
+  │  click("朋友圈")
   │  wait_for(TEXT_APPEARED, matched="这一刻的想法", timeout=5s)
-  │       │
-  │       ├─ 事件到达 → ✅ 进入下一步
-  │       └─ 超时     → 清理弹窗 → 重试 (最多 3 次)
+  │
+  ├─ 事件到达 → 进入下一步
+  └─ 超时     → 清理弹窗 → 重试 (最多 3 次)
   ▼
 TYPING_CONTENT
-  │  operator.type(text)
+  │  type(text)
   │  wait_for(TIMER_EXPIRED, reason="typing_complete", timeout=2s)
   ▼
-ADDING_IMAGES
-  │  粘贴图片 → wait_for(TIMER_EXPIRED) → OCR 检测上传状态
-  │       │
-  │       ├─ 无"上传失败"文字 → ✅ 完成
-  │       └─ 有"上传失败"     → 重试
+ADDING_IMAGES (有图片时)
+  │  粘贴图片 → OCR 检测上传状态
+  │
+  ├─ 无"上传失败"文字 → 完成
+  └─ 有"上传失败"     → 重试
   ▼
 CONFIRMING_PUBLISH
-  │  operator.click("发表")
+  │  click("发表")
   │  wait_any([TEXT_APPEARED, TIMER_EXPIRED], timeout=15s)
-  │       │
-  │       ├─ "已发送" appeared → ✅ DONE
-  │       └─ 超时/"失败"      → 重试 (最多 3 次)
+  │
+  ├─ "已发送" appeared → DONE
+  └─ 超时/"失败"      → 重试 (最多 3 次)
   ▼
 DONE
 ```
 
-### 3.4 Watcher 的事件产生机制
-
-```
-OCRTextWatcher (每 1.0s):
-  OCR扫描 → 文字集合 {A, B, C}
-  对比上一帧 {A, B}
-  新出现 C → emit(TEXT_APPEARED, {text: C, ...})
-
-UIATreeWatcher (每 0.5s):
-  UIA dump → 元素名称集合
-  对比上一帧 → diff → emit(ELEMENT_APPEARED / ELEMENT_VANISHED)
-
-WindowWatcher (零轮询):
-  SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE) 注册操作系统回调
-  窗口移动 → OS 通知 → emit(WINDOW_MOVED, {dx, dy})
-
-TimerWatcher (按需):
-  threading.Timer(seconds, callback) → 到期 → emit(TIMER_EXPIRED)
-```
-
 ---
 
-## 4. 模块详解
+## 4. 核心模块详解
 
-### 4.1 定位层 (src/locator/)
-
-#### 4.1.1 OCR 文字定位器 (`ocr_locator.py`)
-
-这是系统的**主力定位手段**（覆盖 80% 场景）。
+### 4.1 文件结构
 
 ```
-输入: 文字标签 "朋友圈"
-输出: TextBlock(x=192, y=28, confidence=0.97)
-原理: PaddleOCR / 微信原生 OCR / EasyOCR
-特点: 版本无关、DPI 无关、主题无关
+wechat-moments-automation/
+├── README.md                           # 项目说明
+├── DEVELOPMENT.md                      # 本文件
+├── ARCHITECTURE.md                     # 集成架构设计
+├── LICENSE                             # MIT
+├── requirements.txt                    # Python 依赖
+├── main.py                             # 入口
+├── config/
+│   └── settings.yaml                   # 全局配置
+├── src/
+│   ├── core/                           # 事件驱动核心
+│   │   ├── events.py                   #   EventBus + Event + EventType
+│   │   ├── watchers.py                 #   Watcher 事件源
+│   │   └── publisher.py                #   EventDrivenPublisher
+│   ├── api/
+│   │   └── server.py                   #   FastAPI REST + WebSocket
+│   ├── locator/                        # 定位层（7 模块）
+│   │   ├── ocr_locator.py              #   OCR 文字定位
+│   │   ├── feature_locator.py          #   SIFT/ORB 特征匹配
+│   │   ├── anchor_locator.py           #   锚点校准 + 相对定位
+│   │   ├── router.py                   #   策略路由
+│   │   ├── template_extractor.py       #   运行时模板提取
+│   │   ├── resource_extractor.py       #   PE 资源提取 + Hook 捕获
+│   │   └── wechat_native_ocr.py        #   微信 OCR protobuf 集成
+│   ├── executor/                       # 执行层（5 模块）
+│   │   ├── human_sim.py                #   类人行为模拟
+│   │   ├── state_machine.py            #   状态机
+│   │   ├── operator.py                 #   操作执行器
+│   │   ├── uia_bridge.py               #   Python↔C# UIA 桥接
+│   │   └── file_dialog.py              #   文件对话框自动化
+│   ├── monitor/                        # 监控层（2 模块）
+│   │   ├── risk_detector.py            #   风控检测 + 指数退避
+│   │   └── popup_handler.py            #   弹窗检测 + 自动清理
+│   ├── recovery/                       # 恢复层
+│   │   └── error_recovery.py           #   多层级异常恢复
+│   ├── moments/                        # 业务层
+│   │   └── publisher.py                #   轮询版发布器（兼容）
+│   └── cs_uia_service/                 # C# UIA 微服务
+│       ├── WeChatUIA.csproj            #   .NET 项目文件
+│       └── Program.cs                  #   FlaUI + WinEventHook
+├── integrations/                       # 外部集成
+│   ├── openclaw/
+│   │   └── wechat-moments-skill.ts     #   OpenClaw Skill
+│   └── sparkle-frontend/               #   Electron 前端
+│       ├── INTEGRATION.md              #   集成指南
+│       └── src/
+│           ├── utils/wechat-ipc.ts     #    IPC 封装
+│           ├── components/sider/
+│           │   └── wechat-card.tsx     #    侧边栏卡片
+│           ├── pages/
+│           │   └── wechat-moments.tsx  #    朋友圈管理页面
+│           └── main-ipc.ts             #    主进程 IPC 处理器
+├── templates/
+│   └── icons/                          # 图标模板
+└── logs/                               # 运行日志
 ```
 
-**接口**:
-- `find_text(target) → List[TextBlock]` — 搜索包含目标文字的文本块
-- `find_best(target) → Optional[TextBlock]` — 置信度最高的匹配
-- `click_text(target) → bool` — 查找并点击
-- `wait_text(target, timeout) → Optional[TextBlock]` — 等文字出现
-- `scan_screen(region=None) → List[TextBlock]` — 全屏 OCR
-- `dump_screen_text() → str` — 调试用，打印所有识别到的文字
+### 4.2 定位层
 
-**引擎选择逻辑**:
-```
-UnifiedOCREngine:
-  1. 尝试微信原生 OCR (WeChatOCR.exe + Mojo IPC)
-  2. 不可用 → PaddleOCR
-  3. 不可用 → EasyOCR
+#### OCRLocator (`ocr_locator.py`)
+
+主力定位手段，覆盖 80% 场景。
+
+```python
+locator = OCRLocator(engine='paddleocr')
+locator.click_text("朋友圈")         # 找到并点击
+matches = locator.find_text("发表")   # 搜索全部匹配
+best = locator.find_best("发表")     # 取置信度最高
+result = locator.wait_text("已发送", timeout=10.0)  # 等待出现
+all_text = locator.get_all_text()    # 全屏文字调试
 ```
 
-#### 4.1.2 特征点匹配定位器 (`feature_locator.py`)
+引擎选择：微信原生 OCR (WeChatOCR.exe + protobuf) → PaddleOCR → EasyOCR
 
-覆盖 OCR 找不到的**纯图标按钮**。
+#### FeatureLocator (`feature_locator.py`)
 
-```
-输入: 图标模板 "camera_icon.png"
-输出: (center_x, center_y) 或 None
-原理: ORB/SIFT 特征点提取 → knnMatch → Lowe's ratio test → RANSAC 单应性
-特点: 缩放不变、旋转不变、光照不敏感
-```
+覆盖纯图标按钮，SIFT/ORB 特征匹配。
 
 | 算法 | 精度 | 速度 | 专利 |
 |------|------|------|------|
-| SIFT | 最高 | 200-500ms | 有专利（需 opencv-contrib） |
+| SIFT | 最高 | 200-500ms | 需 opencv-contrib |
 | ORB（默认） | 高 | 50-200ms | 无（开源） |
 
-#### 4.1.3 多锚点校准器 (`anchor_locator.py`)
+#### AnchorCalibrator (`anchor_locator.py`)
 
-运行时自动校准，建立当前版本的坐标映射。
-
-```
-启动时:
-  1. detect_window()           → 获取微信窗口尺寸
-  2. scan_navigation()         → OCR 扫导航栏 → 建立 nav_* 锚点
-  3. locate_icons()            → SIFT 特征匹配定位图标 → icon_* 锚点
-  4. enter_moments_and_scan()  → 进入朋友圈页面 → moments_* 锚点
-  5. build_mapping()           → 输出 CoordinateMapping
-
-运行时:
-  locate_relative("nav_朋友圈", dx=30, dy=180)  → 推算目标位置
-```
-
-#### 4.1.4 策略路由器 (`router.py`)
-
-**定位优先级**:
-```
-find_element(target):
-  策略 1: OCR 文字定位     → fastest, most reliable
-  策略 2: SIFT/ORB 特征匹配 → for icon-only elements
-  策略 3: 锚点相对定位     → inference from known positions
-  策略 4: 像素模板匹配     → last resort (version-sensitive)
-  全失败  → 截图 + 日志    → 调试用
-```
-
-**预定义元素库** (`MOMENTS_ELEMENTS`):
-- `nav_moments` — "朋友圈"导航
-- `input_hint` — "这一刻的想法"输入框
-- `btn_add_photo` — "相册"按钮
-- `btn_publish` — "发表"按钮
-- `msg_success` — "已发送"成功提示
-
-#### 4.1.5 PE 资源提取器 (`resource_extractor.py`)
+运行时自动校准，构建坐标映射。
 
 ```
-策略 A（首选）: pefile 解析 WeChatWin.dll .rsrc 段
-  → 提取 ICON / BITMAP / PNG / RCData
-  → 自动转换为 PNG
-
-策略 B（备选）: GDI/GDI+ Hook 注入
-  → Hook GdipLoadImageFromFile / LoadImageW
-  → 拦截微信加载的每一个图像
-  → 自动保存
+启动时扫描:
+  → OCR 扫导航栏 → nav_聊天, nav_通讯录, nav_朋友圈
+  → 特征匹配定位图标 → icon_camera, icon_photo
+  → 进入朋友圈页面扫描 → moments_这一刻的想法, moments_发表
+  → 输出 CoordinateMapping
 ```
 
-#### 4.1.6 运行时模板提取器 (`template_extractor.py`)
+#### LocateRouter (`router.py`)
+
+四级降级定位策略：
 
 ```
-输入: 文字标签列表 ["朋友圈", "发表", "相册"]
-流程:
-  1. OCR 找到文字位置
-  2. 截图文字周围区域
-  3. Canny 边缘检测 → 轮廓提取 → 精确裁剪按钮边界
-  4. 保存为 PNG 模板
+策略 1: OCR 文字定位     → 最快最准
+策略 2: SIFT/ORB 特征匹配 → 纯图标元素
+策略 3: 锚点相对定位     → 推断未知元素
+策略 4: 像素模板匹配     → 兜底（版本敏感）
+全失败  → 截图 + 日志    → 调试用
 ```
 
-#### 4.1.7 微信原生 OCR (`wechat_native_ocr.py`)
+### 4.3 执行层
 
-**Protobuf schema** (内嵌):
-```protobuf
-message OcrRequest {
-    optional bytes image_data = 1;
-    optional int32 task_id = 2;
-}
+#### HumanSimulator (`human_sim.py`)
 
-message OcrResponse {
-    optional int32 task_id = 1;
-    optional int32 err_code = 2;
-    optional OcrResult result = 4;
-}
+| 行为 | 算法 | 关键参数 |
+|------|------|----------|
+| 操作延迟 | `Gamma(shape=3) + uniform(0.7, 1.3)` | 5% 概率"走神" ×1.5~3 |
+| 鼠标轨迹 | 二次贝塞尔 `(1-t)²P₀ + 2(1-t)tP₁ + t²P₂` | ±80px 控制点偏移, ±2px 抖动 |
+| 键盘输入 | 逐字符，高频字 0.3× 基础延迟，标点 2.5-4.5× | WPM=60-100 |
+| 多余动作 | 30% 概率插入 | 晃鼠标/看向别处/犹豫/滚轮 |
 
-message OcrResult {
-    repeated LineResult lines = 1;  // 每行结果
-}
+鼠标速度曲线：`t<0.2` 加速 → `0.2~0.8` 匀速 → `t>0.8` 减速逼近
 
-message LineResult {
-    repeated CharResult chars = 1;  // 每字符
-    optional Box box = 2;           // 包围框
-    optional string text = 3;       // 完整文字
-}
-```
+#### UIABridge (`uia_bridge.py`)
 
-**通信协议**: Google Protocol Buffers + Chromium Mojo IPC
-
-### 4.2 执行层 (src/executor/)
-
-#### 4.2.1 类人行为模拟 (`human_sim.py`)
-
-| 行为 | 算法 | 参数 |
-|------|------|------|
-| 操作延迟 | `Gamma(shape=3, scale=base/3) + uniform(0.7, 1.3)` | 5% 概率"走神" ×1.5~3 |
-| 鼠标轨迹 | 二次贝塞尔 `(1-t)²P0 + 2(1-t)tP1 + t²P2` | ±80px 控制点随机偏移, ±2px 每步抖动 |
-| 键盘输入 | 逐字符 `60/WPM` 为基础延迟, 高频字 0.3~0.6×, 标点 2.5~4.5× | WPM=60-100 |
-| 多余操作 | 30% 概率: 晃鼠标 / 看向别处 / 犹豫 / 滚轮 | — |
-
-**贝塞尔曲线速度曲线**:
-```
-t < 0.2  → 加速阶段（稍慢，从静止启动）
-0.2~0.8 → 匀速阶段（最快）
-t > 0.8 → 减速阶段（逼近目标，精准调整）
-```
-
-#### 4.2.2 C# UIA 桥接 (`uia_bridge.py`)
-
-Python 与 C# 微服务的通信层。
+Python ↔ C# 微服务通信层：
 
 ```python
 bridge = UIABridge()
-
-# 控件树操作
-tree = bridge.dump_tree()              # JSON 格式完整控件树
-buttons = bridge.get_all_clickable()    # 所有可点击按钮
-elem = bridge.find_elements_by_name("发表")  # 按名称查找
-
-# 窗口操作
-bridge.activate_window()               # 激活/置顶微信窗口
-rect = bridge.get_window_rect()        # 获取窗口位置
-
-# 登录检测
-result = bridge.check_login()          # 是否已登录
-# → {'isLoggedIn': True, 'detectedPage': '微信主界面', ...}
-
-# 窗口监控（零轮询 WinEventHook）
-bridge.start_window_monitor(on_change=callback)
+tree = bridge.dump_tree()              # 完整控件树 JSON
+bridge.activate_window()               # 激活微信
+login = bridge.check_login()           # 登录状态检测
+bridge.start_window_monitor(callback)  # 窗口位置监控
 ```
 
-**C# 服务编译**:
-```bash
-cd src/cs_uia_service
-dotnet publish -c Release -o publish
-# 输出: publish/WeChatUIA.exe
+#### FileDialogHandler (`file_dialog.py`)
+
+图片添加三策略：
+
+```
+策略 A: CF_DIB 剪贴板图片 → Ctrl+V     (最优，绕过对话框)
+策略 A2: CF_HDROP 文件路径 → Ctrl+V     (多图场景)
+策略 B: pywinauto 操控文件对话框         (标准方案)
+策略 C: pynput SendKeys 键盘模拟        (兜底)
 ```
 
-#### 4.2.3 文件对话框 (`file_dialog.py`)
+### 4.4 监控层
 
-**策略优先级**:
-```
-策略 A: CF_DIB 剪贴板图片粘贴 → Ctrl+V
-  微信朋友圈原生支持，完全绕过文件对话框
+#### RiskDetector (`risk_detector.py`)
 
-策略 A2: CF_HDROP 文件路径粘贴 → Ctrl+V
-  直接将文件路径写入剪贴板，粘贴即上传
+风控信号（通过 OCR 文字匹配，版本无关）：
 
-策略 B: pywinauto → dlg.Edit.set_text(path) → dlg["打开"].click()
-  操控 Windows 标准文件对话框
+| 信号 | 等级 | 自动处理 | 冷却倍数 |
+|------|------|----------|----------|
+| "重新登录" | CRITICAL | stop | ×8 |
+| "账号已被限制" | DANGER | stop | ×10 |
+| "操作太频繁" | WARNING | pause | ×2 |
+| "安全验证" | DANGER | stop | ×6 |
+| "版本过低" | CRITICAL | stop | 需手动升级 |
 
-策略 C: pynput → 键盘模拟输入路径 → Enter
-  最后兜底方案
-```
+指数退避冷却：第 N 次触发 → 冷却 `base * multiplier * 2^(N-1)` 分钟，上限 6 小时。
 
-#### 4.2.4 操作执行器 (`operator.py`)
+### 4.5 C# UIA 微服务 (`cs_uia_service/`)
 
-**升级后的核心能力**:
-- `click_by_uia(name)` — 通过 UIA 控件树直接点击（100% 准确）
-- `check_login_state()` — 检测微信登录状态
-- `start_window_monitoring(on_recalibrate)` — 启动窗口监控
-- `_wait_image_upload(timeout)` — 等待图片上传完成
-
-### 4.3 监控层 (src/monitor/)
-
-#### 4.3.1 风控检测器 (`risk_detector.py`)
-
-**检测信号** (版本无关的文字匹配):
-| 信号 | 等级 | 处理 |
-|------|------|------|
-| "重新登录" | CRITICAL | 停止所有操作 |
-| "账号已被限制" | DANGER | 停止 + 长时间冷却 |
-| "操作太频繁" | WARNING | 指数退避冷却 |
-| "安全验证" | DANGER | 停止 + 需要人工 |
-| "版本过低" | CRITICAL | 需要升级微信 |
-
-**指数退避冷却**:
-```
-第 1 次 → 2 分钟
-第 2 次 → 4 分钟
-第 3 次 → 8 分钟
-第 4 次 → 16 分钟
-达到上限 → 停止当天所有操作
-```
-
-#### 4.3.2 弹窗处理器 (`popup_handler.py`)
-
-**弹窗优先级**:
-```
-BLOCKING: 版本更新、强制登出 → 立即处理
-HIGH:     安全验证 → 暂停操作
-NORMAL:   消息通知 → 延后处理
-LOW:      非阻断通知 → 可忽略
-```
-
-### 4.4 C# UIA 微服务 (src/cs_uia_service/)
-
-#### 4.4.1 技术栈
-
-- **FlaUI.UIA3**: Windows UIAutomation 最佳 .NET 封装
-- **System.Text.Json**: JSON 序列化
-- **user32.dll P/Invoke**: FindWindow, SetForegroundWindow, SetWinEventHook, GetWindowRect
-
-#### 4.4.2 命令接口
+#### 命令接口
 
 | 命令 | 输出 | 用途 |
 |------|------|------|
@@ -506,275 +435,248 @@ LOW:      非阻断通知 → 可忽略
 | `check-login` | 登录状态 JSON | 掉线检测 |
 | `get-window-rect` | 窗口矩形 JSON | 获取位置尺寸 |
 
-#### 4.4.3 控件树 JSON 格式
+#### 编译
+
+```bash
+cd src/cs_uia_service
+dotnet restore
+dotnet publish -c Release -o publish
+# 输出: publish/WeChatUIA.exe
+```
+
+依赖：.NET 8.0 SDK + NuGet: FlaUI.UIA3, System.Text.Json
+
+---
+
+## 5. API Server
+
+### 5.1 端点一览
+
+| Method | Path | 说明 | 请求体 | 响应 |
+|--------|------|------|--------|------|
+| POST | `/api/publish` | 发布朋友圈 | `{text, images}` | `{success, task_id, elapsed_seconds, step_times, error}` |
+| GET | `/api/status` | 系统状态 | — | `{status, wechat, risk, daily, templates_count, uptime_seconds}` |
+| POST | `/api/schedule` | 创建定时任务 | `{text, images, cron, enabled}` | `{id, text, cron, enabled, next_run}` |
+| GET | `/api/schedule` | 查看定时任务 | — | `[{id, text, cron, enabled, next_run}]` |
+| DELETE | `/api/schedule/{id}` | 取消定时任务 | — | `{success}` |
+| GET | `/api/history` | 发布历史 | `?limit=50` | `[{task_id, text, success, elapsed_seconds, timestamp}]` |
+| POST | `/api/templates/scan` | 扫描模板 | — | `{success, count}` |
+| GET | `/api/logs` | 运行日志 | `?lines=100` | `{file, lines: [...]}` |
+| WS | `/ws/events` | 实时事件流 | — | 持续推送事件 JSON |
+| GET | `/health` | 健康检查 | — | `{status: "ok"}` |
+
+### 5.2 启动
+
+```bash
+pip install fastapi uvicorn pydantic croniter
+python -m uvicorn src.api.server:app --host 127.0.0.1 --port 18080
+```
+
+### 5.3 WebSocket 事件格式
 
 ```json
 {
-  "window": {
-    "left": 0, "top": 0, "right": 1200, "bottom": 800,
-    "title": "微信", "className": "WeChatMainWndForPC"
+  "type": "text.appeared",
+  "source": "OCRTextWatcher",
+  "payload": {
+    "text": "已发送",
+    "matched": "已发送",
+    "x": 500,
+    "y": 600,
+    "confidence": 0.97
   },
-  "rootElement": {
-    "controlType": "Window",
-    "name": "微信",
-    "automationId": "",
-    "children": [
-      {
-        "controlType": "Button",
-        "name": "朋友圈",
-        "automationId": "momentsBtn",
-        "x": 192, "y": 0,
-        "width": 64, "height": 56,
-        "isEnabled": true,
-        "children": []
-      }
-    ]
-  },
-  "totalElements": 156,
-  "timestamp": 1718123456789
+  "timestamp": 1718123456.789
 }
 ```
 
-#### 4.4.4 关键代码解析
+---
 
-**附着窗口 + 触发无障碍模式**:
-```csharp
-// 找到微信进程
-Process[] processes = Process.GetProcessesByName("WeChat");
-var app = FlaUI.Core.Application.Attach(processes[0].Id);
+## 6. OpenClaw 集成
 
-// 附着主窗口 —— 这一步触发微信的"无障碍模式"
-// 微信检测到 UIA Client 接入后，自动暴露完整控件树
-var window = app.GetMainWindow(new UIA3Automation());
+### 6.1 Skill 命令
 
-// 使用 ControlViewWalker 遍历（过滤纯布局元素）
-var walker = automation.TreeWalkerFactory.GetControlViewWalker();
-var child = walker.GetFirstChild(window);
+在 Telegram/WhatsApp/Discord 中可用命令：
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `/publish` | 发布朋友圈 | `/publish 今天天气真好 \| photo.jpg` |
+| `/status` | 查看系统状态 | `/status` |
+| `/schedule add` | 创建定时任务 | `/schedule add 0 9 * * * \| 早安` |
+| `/schedule list` | 定时任务列表 | `/schedule list` |
+| `/schedule remove` | 取消定时任务 | `/schedule remove task_001` |
+| `/history` | 发布历史 | `/history` |
+
+### 6.2 自然语言意图
+
+OpenClaw LLM 识别的意图模式：
+
+```
+"发朋友圈" "发布朋友圈" "帮我发朋友圈" "发一条朋友圈"
+    → 提取文字内容 → 调用 /api/publish
+
+"朋友圈状态" "发布状态" "系统状态"
+    → 调用 /api/status
 ```
 
-**WinEventHook 零轮询窗口监控**:
-```csharp
-// 在操作系统层面注册窗口变化回调
-// 窗口移动 → OS 通知 → 回调执行 → 0ms 延迟
-var hook = SetWinEventHook(
-    EVENT_OBJECT_LOCATIONCHANGE,  // 监听位置变化
-    EVENT_OBJECT_LOCATIONCHANGE,
-    IntPtr.Zero,
-    (hHook, eventType, hWnd, ...) => {
-        if (hWnd == wechatWindowHandle) {
-            // 输出 JSON 到 stdout
-            Console.WriteLine(JsonSerializer.Serialize(windowInfo));
-        }
-    },
-    0, 0, WINEVENT_OUTOFCONTEXT
-);
+### 6.3 安装
+
+1. 将 `integrations/openclaw/wechat-moments-skill.ts` 放入 OpenClaw skills 目录
+2. 设置环境变量 `WECHAT_MOMENTS_API=http://127.0.0.1:18080`
+3. 重启 OpenClaw Gateway
+
+---
+
+## 7. Electron 前端集成
+
+### 7.1 技术栈兼容
+
+前端代码使用与 sparkle-ref 完全一致的技术栈：
+
+| 技术 | sparkle-ref | 前端代码 | 匹配 |
+|------|------------|----------|:----:|
+| React | 19.2.6 | 19.x | ✅ |
+| UI 组件 | @heroui/react + @heroui-v3/react | 同 | ✅ |
+| CSS | Tailwind CSS 4.3 | 同 | ✅ |
+| 图标 | react-icons 5.6 | 同 | ✅ |
+| 路由 | react-router-dom 7.15 | 同 | ✅ |
+| 拖拽 | @dnd-kit | useSortable | ✅ |
+| 数据 | useSWR | 同 | ✅ |
+| 配置 | useAppConfig | 同 | ✅ |
+| IPC | ipcRenderer.invoke | ipcErrorWrapper | ✅ |
+
+### 7.2 文件清单
+
+```
+integrations/sparkle-frontend/
+├── INTEGRATION.md                           # 精确集成步骤
+├── src/
+│   ├── utils/wechat-ipc.ts                  # IPC 封装（模式匹配 ipc.ts）
+│   ├── components/sider/wechat-card.tsx     # 侧边栏卡片（模式匹配 proxy-card.tsx）
+│   ├── pages/wechat-moments.tsx             # 主页面（模式匹配 proxies.tsx）
+│   └── main-ipc.ts                          # 主进程 IPC 处理器
+```
+
+### 7.3 sparkle-ref 需要修改的 3 个文件
+
+| 文件 | 改动内容 | 代码量 |
+|------|----------|--------|
+| `src/renderer/src/routes/index.tsx` | 加 1 行 import + 1 个 route 对象 | 2 行 |
+| `src/renderer/src/App.tsx` | 加 1 个 import, componentMap/siderCardRouteMap/defaultSiderOrder 各加 1 项 | 4 行 |
+| `src/main/index.ts` | 加 1 行 import + 1 行 `registerWechatIpcHandlers()` | 2 行 |
+
+总计：sparkle-ref 原有代码只需新增 8 行。
+
+### 7.4 页面结构
+
+```
+/wechat → WechatMoments 页面
+  ├── Tab "仪表盘"  — 微信状态 + 风控等级 + 今日统计 + 最近发布
+  ├── Tab "编辑"    — 文字输入 + 立即发布/定时发布
+  ├── Tab "历史"    — 发布记录列表（成功/失败标识 + 耗时）
+  └── Tab "定时"    — Cron 表达式 + 预设 + 任务列表管理
 ```
 
 ---
 
-## 5. 数据流与状态转换
+## 8. 数据流与状态转换
 
-### 5.1 初始化数据流
-
-```
-main.py
-  │
-  ▼
-publisher.initialize()
-  │
-  ├─ 1. operator.find_wechat_window()
-  │     └─ win32gui.FindWindow("WeChatMainWndForPC")
-  │
-  ├─ 2. operator.ensure_window_active()
-  │     └─ SetForegroundWindow + 置顶 + 取消最小化
-  │
-  ├─ 3. operator.check_login_state()
-  │     ├─ 优先: C# UIA dump-tree → 检查 nav 标签
-  │     └─ 回退: OCR 扫描 → 查找 "聊天""通讯录"
-  │
-  ├─ 4. calibrator.calibrate()
-  │     ├─ OCR 扫描导航栏 → nav_* 锚点
-  │     ├─ SIFT 特征匹配 → icon_* 锚点
-  │     └─ 进入朋友圈扫描 → moments_* 锚点
-  │
-  ├─ 5. WatchManager.start_all()
-  │     ├─ OCRTextWatcher   (1.0s 间隔)
-  │     ├─ UIATreeWatcher   (0.5s 间隔)
-  │     ├─ WindowWatcher    (WinEventHook 零轮询)
-  │     └─ TimerWatcher     (按需)
-  │
-  └─ 6. risk_detector.check(force=True)
-        └─ OCR 扫描风控关键词
-```
-
-### 5.2 单次发布数据流
+### 8.1 初始化流程
 
 ```
-publisher.publish(task)
-  │
-  ├─ _pre_check()
-  │   ├─ check_login_state()     ← 事件源: UIA
-  │   ├─ risk_detector           ← 事件源: OCR
-  │   └─ popup_handler           ← 事件源: OCR
-  │
-  ├─ _step_enter_moments()
-  │   ├─ click_by_uia("朋友圈")   ← 走 C# UIA
-  │   ├─ wait_for(TEXT_APPEARED) ← 事件驱动等待
-  │   └─ 超时 → popup_handler → retry
-  │
-  ├─ _step_type_text()
-  │   ├─ click_element(input_hint) ← OCR 定位
-  │   ├─ human_sim.type_text()     ← 类人输入
-  │   └─ wait_for(TIMER_EXPIRED)   ← 事件确认
-  │
-  ├─ _step_add_images()
-  │   ├─ file_dialog.paste()       ← CF_DIB 剪贴板
-  │   ├─ OCR 检测上传状态          ← 轮询（OCR 无法检测上传进度）
-  │   └─ 失败 → retry
-  │
-  └─ _step_publish()
-      ├─ click_element("发表")     ← OCR 定位
-      ├─ wait_any([TEXT_APPEARED, TIMER_EXPIRED])
-      └─ "发送失败" → retry
+main.py → publisher.initialize()
+  ├─ find_wechat_window()         # win32gui.FindWindow
+  ├─ ensure_window_active()       # SetForegroundWindow
+  ├─ check_login_state()          # UIA / OCR 双重检测
+  ├─ calibrator.calibrate()       # OCR + SIFT 建立锚点
+  ├─ WatchManager.start_all()     # 4 个 Watcher 启动
+  │   ├─ OCRTextWatcher   (1.0s)
+  │   ├─ UIATreeWatcher   (0.5s)
+  │   ├─ WindowWatcher    (零轮询)
+  │   └─ TimerWatcher     (按需)
+  └─ risk_detector.check()       # 风控检查
 ```
 
-### 5.3 状态机转换图
+### 8.2 单次发布数据流
 
 ```
-                    ┌─────────────────────────────┐
-                    │           IDLE               │
-                    └──────────────┬──────────────┘
-                                   │ STEP_STARTED
-                    ┌──────────────▼──────────────┐
-                    │     ENTERING_MOMENTS         │
-                    │  等待 text.appeared(        │
-                    │  "这一刻的想法")             │
-                    └──────────────┬──────────────┘
-                                   │ 事件到达
-                    ┌──────────────▼──────────────┐
-                    │      TYPING_CONTENT          │
-                    │  human_sim.type_text()      │
-                    │  等待 timer.expired          │
-                    └──────────────┬──────────────┘
-                                   │
-                          ┌────────┴────────┐
-                          │  有图片?         │
-                          └────────┬────────┘
-                    ┌──────────────▼──────┐  ┌──▼─────────────────┐
-                    │   ADDING_IMAGES     │  │  (skip)            │
-                    │ paste + 等上传完成  │  └──────────┬─────────┘
-                    └──────────────┬──────┘             │
-                                   └─────────┬──────────┘
-                                             │
-                    ┌────────────────────────▼─────────┐
-                    │       CONFIRMING_PUBLISH          │
-                    │  click("发表")                    │
-                    │  等待 text.appeared("已发送")     │
-                    └──────────────┬───────────────────┘
-                                   │ "已发送" appeared
-                    ┌──────────────▼───────────────────┐
-                    │            DONE                  │
-                    │  记录统计 + 事件通知              │
-                    └──────────────────────────────────┘
+publish(task)
+  ├─ _pre_check()                 # 登录 + 风控 + 弹窗 + 窗口
+  ├─ _step_enter_moments()        # click + wait_for(TEXT_APPEARED)
+  ├─ _step_type_text()            # type + wait_for(TIMER_EXPIRED)
+  ├─ _step_add_images()           # paste + OCR 检测上传
+  └─ _step_publish()              # click + wait_any(TEXT_APPEARED, TIMER_EXPIRED)
+```
 
-     任一状态失败 3 次:
-          │
-          ▼
-     ┌──────────┐
-     │  ERROR   │ → 记录截图 + 日志 + 通知
-     └──────────┘
+### 8.3 状态机转换
 
-     风控信号检测:
-          │
-          ▼
-     ┌──────────┐
-     │ WAITING  │ → 指数退避冷却 → 恢复到之前状态
-     └──────────┘
+```
+IDLE → ENTERING_MOMENTS → TYPING_CONTENT → [ADDING_IMAGES] → CONFIRMING_PUBLISH → DONE
+                     ↑ 任一状态失败 3 次 → ERROR
+                     ↑ 风控信号检测 → WAITING（冷却后恢复）
 ```
 
 ---
 
-## 6. 关键技术决策
+## 9. 关键技术决策
 
-### 6.1 为什么选择 Python + C# 混合架构
+### 9.1 为什么 Python + C# 混合
 
-| 考虑因素 | Python | C# | 结论 |
-|----------|--------|----|----|
-| OCR/CV 生态 | PaddleOCR, OpenCV 原生支持 | 需 ONNX 转换或第三方封装 | Python |
-| UIAutomation | pywin32 封装残缺 | FlaUI 一等公民 | C# |
-| Windows API | ctypes 调用啰嗦 | P/Invoke 直接 | C# |
-| 开发速度 | 极快 | 中等 | Python |
-| 微信 4.x 无障碍触发 | ctypes 调 COM | 原生 `AutomationElement.FromHandle` | C# |
-| 部署 | 需 Python 运行时 | 单文件 exe | 各自优势 |
+| 考虑因素 | Python | C# |
+|----------|--------|-----|
+| OCR/CV 生态 | PaddleOCR, OpenCV 原生 | 需 ONNX 转换 | → Python |
+| UIAutomation | pywin32 封装残缺 | FlaUI 一等公民 | → C# |
+| Windows API | ctypes 啰嗦易错 | P/Invoke 直接 | → C# |
+| 微信 4.x 无障碍触发 | ctypes 调 COM | 原生 `AutomationElement.FromHandle` | → C# |
+| 开发速度 | 极快 | 中等 | → Python |
 
-**结论**: Python 做 AI/编排层，C# 做 Windows 原生交互层。
+**结论**: Python 做 AI/编排/API 层，C# 做 Windows 原生交互层。
 
-### 6.2 为什么事件驱动优于轮询
+### 9.2 为什么事件驱动
 
 | 维度 | 轮询 | 事件驱动 |
 |------|------|----------|
 | CPU 占用 | 持续消耗（循环扫描） | 近乎为零（等待唤醒） |
 | 响应时间 | 0.5~3s（取决于轮询间隔） | ~100ms（事件发生即响应） |
-| 代码耦合 | 高（Publisher 直接调用 Watcher 方法） | 低（都通过 EventBus 通信） |
+| 代码耦合 | 高（Publisher 直接调用 Watcher） | 低（都通过 EventBus 通信） |
 | 可扩展性 | 加功能 = 加扫描 = 加 CPU | 加功能 = 加订阅 = 零增量成本 |
-| 异常处理 | 在扫描循环里 try/catch | 事件处理器独立 try/catch |
 
-### 6.3 为什么不锁定微信版本
+### 9.3 为什么不锁定微信版本
 
-用户明确要求不锁定版本。这意味着不能依赖任何可能随版本变化的属性：
-
-| 可依赖（语义层） | 不可依赖（表现层） |
-|-----------------|-------------------|
-| 文字的语义内容 ("朋友圈" 永远叫 "朋友圈") | 文字的像素表现 (字体、颜色、大小) |
-| 图标的形状特征 (SIFT 描述符对缩放/光照不变) | 图标的精确像素值 |
+| 可依赖（语义层，版本无关） | 不可依赖（表现层，随版本变化） |
+|---------------------------|-------------------------------|
+| 文字的语义内容 | 文字的精确像素值 |
+| 图标的形状特征 (SIFT 描述符) | 图标的精确像素 |
 | 元素的相对空间关系 | 元素的精确坐标 |
-| 窗口类名 (WeChatMainWndForPC 是公开 API) | 控件 AutomationId (随版本变化) |
+| 窗口类名 (WeChatMainWndForPC) | 控件 AutomationId |
 
 ---
 
-## 7. 环境搭建与编译
+## 10. 环境搭建与编译
 
-### 7.1 Python 环境
+### 10.1 Python 环境
 
 ```bash
-# 要求 Python 3.10+
-
-# 克隆仓库
 git clone https://github.com/sebastEXlabe/wechat-moments-automation.git
 cd wechat-moments-automation
 
-# 创建虚拟环境
 python -m venv venv
 venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/macOS
 
-# 安装依赖
 pip install -r requirements.txt
-
-# 验证安装
 python -c "from src.core import EventBus; print('OK')"
 ```
 
-### 7.2 C# 微服务编译
+### 10.2 C# 微服务编译
 
 ```bash
-# 要求 .NET 8.0 SDK
-# 下载: https://dotnet.microsoft.com/download
-
+# 需要 .NET 8.0 SDK: https://dotnet.microsoft.com/download
 cd src/cs_uia_service
-
-# 恢复 NuGet 包
 dotnet restore
-
-# 编译并发布（单文件 exe）
 dotnet publish -c Release -o publish
-
-# 验证编译
-publish/WeChatUIA.exe dump-tree
-# 如果微信正在运行，应输出控件树 JSON
+publish/WeChatUIA.exe dump-tree  # 验证
 ```
 
-### 7.3 图标模板准备
+### 10.3 图标模板准备
 
 ```bash
 # 方式 1: 从微信程序文件自动提取
@@ -792,7 +694,21 @@ update_all_templates(OCRLocator())
 "
 ```
 
-### 7.4 运行
+### 10.4 启动 API Server
+
+```bash
+python -m uvicorn src.api.server:app --host 127.0.0.1 --port 18080
+```
+
+### 10.5 启动 Electron 前端
+
+```bash
+# 先完成 sparkle-ref 的 3 处修改（见第 7.3 节）
+cd C:\Users\woshi\Downloads\sparkle-ref
+pnpm dev
+```
+
+### 10.6 运行
 
 ```bash
 # 交互模式
@@ -806,109 +722,80 @@ python main.py --text "分享照片" --images photo1.jpg photo2.jpg
 
 # 批量发布
 python main.py --batch posts.txt
-
-# 空跑测试（不实际发布）
-python main.py --text "测试" --dry-run
 ```
 
 ---
 
-## 8. 配置文件说明
+## 11. 配置文件说明
 
-`config/settings.yaml` 中所有可调参数：
+`config/settings.yaml` 全部参数：
 
 ```yaml
-# ── OCR 引擎 ──
 ocr:
   engine: "paddleocr"          # paddleocr | easyocr
   paddleocr:
     lang: "ch"
-    det_db_thresh: 0.3         # 检测阈值 (越低越敏感)
-  cache_ttl: 2.0               # OCR 缓存有效期 (秒)
+    det_db_thresh: 0.3          # 检测阈值 (越低越敏感)
+  cache_ttl: 2.0                # OCR 缓存有效期 (秒)
 
-# ── 特征匹配 ──
 feature_matching:
-  algorithm: "orb"             # orb | sift
-  orb_features: 2000           # ORB 特征点数量
-  lowe_ratio: 0.65             # Lowe's ratio test (越低越严)
-  min_good_matches: 10         # 最少优质匹配
-  ransac_threshold: 5.0       # RANSAC 重投影误差
+  algorithm: "orb"              # orb | sift
+  orb_features: 2000            # ORB 特征点数量
+  lowe_ratio: 0.65              # Lowe's ratio test (越低越严格)
+  min_good_matches: 10          # 最少优质匹配数
+  ransac_threshold: 5.0         # RANSAC 重投影误差阈值
 
-# ── 类人行为 ──
 human_simulation:
-  base_delay: 3.0              # 基础延迟 (秒)
-  delay_shape: 3.0             # Gamma shape (越大越集中)
-  click_jitter: 3              # 点击随机抖动 (px)
-  extra_action_probability: 0.3 # 多余动作概率
-  typing_wpm_range: [60, 100]  # 打字速度
+  base_delay: 3.0               # 基础操作延迟 (秒)
+  delay_shape: 3.0              # Gamma shape (越大越集中)
+  click_jitter: 3               # 点击位置随机抖动 (px)
+  extra_action_probability: 0.3 # 多余动作概率 (0-1)
+  typing_wpm_range: [60, 100]   # 打字速度范围
 
-# ── 朋友圈 ──
 moments:
-  labels:                      # 文字标签 (版本无关)
+  labels:                       # 文字标签 (版本无关)
     nav_moments: "朋友圈"
     btn_publish: "发表"
     msg_success: "已发送"
-  publish_verify_timeout: 10.0 # 发布验证超时
+  publish_verify_timeout: 10.0  # 发布验证超时 (秒)
 
-# ── 安全 ──
 safety:
   daily_limits:
-    max_posts: 10              # 每日最多发圈
-    max_likes: 50              # 每日最多点赞
+    max_posts: 10               # 每日最多发圈
+    max_likes: 50               # 每日最多点赞
+    max_comments: 20            # 每日最多评论
   task_interval_range: [30, 120] # 任务间间隔 (秒)
-  cooldown_base_minutes: 2     # 冷却基数
-  max_cooldown_seconds: 21600  # 最大冷却 (6h)
+  cooldown_base_minutes: 2      # 风控冷却基数
+  max_cooldown_seconds: 21600   # 最大冷却时间 (6小时)
 
-# ── 日志 ──
 logging:
   level: "INFO"
   rotation: "10 MB"
   retention: "7 days"
+  path: "logs/automation_{time}.log"
 ```
 
 ---
 
-## 9. 扩展指南
+## 12. 扩展指南
 
-### 9.1 添加新的定位策略
+### 12.1 添加新的定位策略
 
 ```python
-# 1. 实现你的定位器
 class MyLocator:
     def locate(self, target) -> Optional[Tuple[int, int]]:
-        # 你的定位逻辑
-        pass
+        pass  # 你的定位逻辑
 
-# 2. 注册到路由器
-from src.locator.router import LocateRouter
-
+# 注册到路由器
 class ExtendedRouter(LocateRouter):
     def locate(self, element):
-        # 先试你的定位器
         result = self.my_locator.locate(element)
         if result:
             return result
-        # 回退到默认策略
         return super().locate(element)
 ```
 
-### 9.2 添加新的事件类型
-
-```python
-from src.core.events import EventType, Event
-
-# 1. 在 EventType 枚举中添加
-# 编辑 src/core/events.py:
-#   MY_NEW_EVENT = "my.new.event"
-
-# 2. 发布事件
-bus.emit(Event(EventType.MY_NEW_EVENT, "my_component", {...}))
-
-# 3. 订阅事件
-bus.on(EventType.MY_NEW_EVENT, lambda e: handle(e))
-```
-
-### 9.3 添加新的 Watcher
+### 12.2 添加新的 Watcher
 
 ```python
 from src.core.watchers import BaseWatcher
@@ -919,31 +806,37 @@ class MyWatcher(BaseWatcher):
 
     def _run_loop(self):
         while self._running:
-            # 你的监测逻辑
             if detected_something():
-                self.bus.emit(Event(...))
+                self.bus.emit(Event(EventType.MY_EVENT, self.name, {...}))
             time.sleep(self.interval)
 
 # 注册到 WatchManager
-manager = WatchManager(bus)
 manager.my_watcher = MyWatcher(bus)
 manager.my_watcher.start()
 ```
 
-### 9.4 添加新的朋友圈功能
+### 12.3 添加新的 API 端点
 
 ```python
-# 在 MOMENTS_ELEMENTS 中添加新元素描述
+# 在 src/api/server.py 中添加
+@app.post("/api/my-new-endpoint")
+async def my_new_endpoint(req: MyModel):
+    result = do_something(req)
+    return {"success": True, "data": result}
+```
+
+### 12.4 添加新的朋友圈功能
+
+```python
+# 在 MOMENTS_ELEMENTS 中添加新元素
 MOMENTS_ELEMENTS['btn_location'] = ElementDescriptor(
     name="所在位置",
     ocr_text="所在位置",
-    anchor_ref=('moments_这一刻的想法', 0, 60),
 )
 
 # 在 publisher 中添加新的处理步骤
 def _step_set_location(self, location_name: str) -> bool:
     self.operator.click_element(MOMENTS_ELEMENTS['btn_location'])
-    # 等待位置选择页面加载
     event = self.bus.wait_for(EventType.TEXT_APPEARED,
                               payload_match={'matched': location_name},
                               timeout=5.0)
@@ -953,95 +846,109 @@ def _step_set_location(self, location_name: str) -> bool:
     return False
 ```
 
-### 9.5 自定义类人行为参数
+### 12.5 自定义类人行为参数
 
 ```python
 from src.executor.human_sim import HumanSimulator, SimulationConfig
 
 config = SimulationConfig(
-    base_delay=5.0,                     # 更慢的操作节奏
-    extra_action_probability=0.5,       # 更高概率的多余动作
-    typing_wpm_range=(40, 60),          # 更慢的打字速度
-    bezier_offset_range=(-120, 120),    # 更弯曲的鼠标轨迹
+    base_delay=5.0,                      # 更慢的节奏
+    extra_action_probability=0.5,        # 更多多余动作
+    typing_wpm_range=(40, 60),           # 更慢的打字
+    bezier_offset_range=(-120, 120),     # 更弯的鼠标轨迹
 )
 sim = HumanSimulator(config)
 ```
 
 ---
 
-## 10. 故障排查
+## 13. 故障排查
 
-### 10.1 微信窗口未找到
+### 13.1 微信窗口未找到
 
-```python
-# 症状
-RuntimeError: "微信窗口未找到，请确认微信已启动"
-
-# 排查
-1. 确认微信已启动且可见（非最小化）
-2. 确认窗口类名正确: win32gui.FindWindow("WeChatMainWndForPC", None)
-3. 如果微信 4.x 改变了类名，更新 config/settings.yaml 中的 window_class
+```
+错误: "微信窗口未找到，请确认微信已启动"
+排查:
+  1. 确认微信已启动且可见（非最小化）
+  2. 确认窗口类名: win32gui.FindWindow("WeChatMainWndForPC", None)
+  3. 微信 4.x 如果改变了类名，更新 config/settings.yaml
 ```
 
-### 10.2 C# UIA 服务不可用
+### 13.2 C# UIA 服务不可用
 
-```python
-# 症状
-logger.warning("WeChatUIA.exe 未找到")
-
-# 排查
-1. 确认已编译 C# 服务:
-   cd src/cs_uia_service && dotnet publish -c Release -o publish
-
-2. 确认 .NET 8.0 SDK 已安装:
-   dotnet --version
-
-3. 如果不想使用 C# 服务，系统自动回退到纯 Python OCR 模式（性能略降）
+```
+错误: "WeChatUIA.exe 未找到"
+排查:
+  1. cd src/cs_uia_service && dotnet publish -c Release -o publish
+  2. dotnet --version  # 确认 .NET 8.0+
+  3. 系统自动回退到纯 OCR 模式，功能不受影响但性能略降
 ```
 
-### 10.3 OCR 安装问题
+### 13.3 OCR 安装问题
 
-```python
+```bash
 # PaddleOCR 安装
-pip install paddlepaddle   # 先装 paddlepaddle
-pip install paddleocr       # 再装 paddleocr
+pip install paddlepaddle
+pip install paddleocr
 
-# 如果 PaddleOCR 安装失败
-pip install easyocr         # 备选方案
-# 然后修改 config/settings.yaml: ocr.engine = "easyocr"
+# 替代方案
+pip install easyocr
+# 修改 config/settings.yaml: ocr.engine = "easyocr"
 ```
 
-### 10.4 OpenCV contrib 问题
+### 13.4 OpenCV contrib 问题
 
-```python
-# 如果使用 SIFT（默认用 ORB 不需要）
-# 问题: AttributeError: module 'cv2' has no attribute 'SIFT_create'
+```bash
+# 仅使用 SIFT 时需要（默认 ORB 不需要）
 pip uninstall opencv-python
 pip install opencv-contrib-python
 ```
 
-### 10.5 日志分析
+### 13.5 API Server 无法连接
 
-```python
-# 启用 DEBUG 日志
-# 修改 config/settings.yaml: logging.level = "DEBUG"
-
-# 关键日志模式:
-"OCR 扫描完成: N 个文本块"          — OCR 正常工作
-"文本块数量异常少 (<5)"             — 窗口可能最小化
-"等待 '[文字]' 超时"                — 页面未加载或不存在
-"定位失败截图已保存"                — 查看 logs/failures/
+```
+错误: "API 不可用" / "连接拒绝"
+排查:
+  1. 确认 Python API Server 已启动
+  2. 检查端口: curl http://127.0.0.1:18080/health
+  3. 检查防火墙是否拦截
 ```
 
-### 10.6 调试截图
+### 13.6 前端页面空白
+
+```
+错误: Electron 中 /wechat 页面空白
+排查:
+  1. 确认已在 routes/index.tsx 添加路由
+  2. 确认已在 App.tsx 注册 componentMap + siderCardRouteMap
+  3. 打开 DevTools → Console 查看错误
+  4. 确认 API Server 在 localhost:18080 运行
+```
+
+### 13.7 调试截图
 
 ```
 logs/failures/                     — 定位失败自动截图
 debug_screenshots/                 — 手动调试截图
 
-分析定位失败截图:
+分析定位失败:
   1. 打开 PNG 查看当前屏幕状态
   2. 确认目标元素是否确实存在
-  3. 如果存在但定位失败 → 调整 confidence 阈值
-  4. 如果不存在 → 检查微信状态（掉线/弹窗/页面变化）
+  3. 存在但定位失败 → 调整 confidence 阈值
+  4. 不存在 → 检查微信状态（掉线/弹窗/页面变化）
+```
+
+### 13.8 日志分析
+
+```bash
+# 启用 DEBUG 日志
+# config/settings.yaml: logging.level = "DEBUG"
+
+# 关键日志模式:
+"OCR 扫描完成: N 个文本块"          — OCR 正常
+"文本块数量异常少 (<5)"             — 窗口可能最小化
+"等待 '[文字]' 超时"                — 页面未加载或不存在
+"定位失败截图已保存"                — 查看 logs/failures/
+"风控信号: operation_too_frequent"  — 被风控，等待冷却
+"检测到窗口移动"                    — 自动校准已触发
 ```
