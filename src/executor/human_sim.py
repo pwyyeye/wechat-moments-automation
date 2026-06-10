@@ -207,7 +207,7 @@ class HumanSimulator:
         wpm = random.randint(*self._config.typing_wpm_range)
 
         # 高频字词库（中文输入法中更容易打出来的字）
-        high_freq_chars = set('的一是了不在有人我他这为之来以时就要们说和'
+        high_freq_chars = set('的一是了不在有人我他这为之来以时就要们说和')
 
         for i, char in enumerate(text):
             pyautogui.write(char)

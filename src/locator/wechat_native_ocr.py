@@ -269,7 +269,7 @@ class WeChatOCREngine:
     微信原生 OCR 引擎 —— 通过 protobuf + Mojo IPC 调用 WeChatOCR.exe。
 
     使用方式：
-        engine = WeChatOCREngine(wechat_dir=r"C:\Program Files\Tencent\WeChat")
+        engine = WeChatOCREngine(wechat_dir=r"C:\\Program Files\\Tencent\\WeChat")
         result = engine.recognize("screenshot.png")
         for line in result:
             print(f"[{line.confidence:.2f}] {line.text} @ ({line.x}, {line.y})")
