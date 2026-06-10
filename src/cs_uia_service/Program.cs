@@ -19,9 +19,11 @@
  *   (输出 publish/WeChatUIA.exe)
  *
  * 依赖：
- *   .NET 8.0 SDK
- *   NuGet: FlaUI.UIA3, System.Text.Json
+ *   .NET 10.0 SDK
+ *   NuGet: FlaUI.UIA3
  */
+
+#nullable enable
 
 using System;
 using System.Collections.Generic;
@@ -143,7 +145,6 @@ namespace WeChatUIA
 
         // 全局状态
         static AutomationBase? _automation;
-        static Window? _wechatWindow;
         static readonly JsonSerializerOptions _jsonOpts = new()
         {
             WriteIndented = false,
@@ -469,12 +470,12 @@ namespace WeChatUIA
                 info.IsOffscreen = element.IsOffscreen;
 
                 var rect = element.BoundingRectangle;
-                if (rect.HasValue)
+                if (!rect.IsEmpty)
                 {
-                    info.X = (int)rect.Value.X;
-                    info.Y = (int)rect.Value.Y;
-                    info.Width = (int)rect.Value.Width;
-                    info.Height = (int)rect.Value.Height;
+                    info.X = (int)rect.X;
+                    info.Y = (int)rect.Y;
+                    info.Width = (int)rect.Width;
+                    info.Height = (int)rect.Height;
                 }
             }
             catch { /* 某些属性可能不可访问 */ }
