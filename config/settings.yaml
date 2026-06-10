@@ -1,0 +1,98 @@
+# 微信朋友圈自动化 —— 全局配置文件
+
+# ── 微信环境 ──
+wechat:
+  window_class: "WeChatMainWndForPC"      # 微信主窗口类名（用于 win32gui.FindWindow）
+  window_title: "微信"                     # 窗口标题
+  # 微信安装路径（用于提取 WeChatOCR.exe 独立调用）
+  install_path: "C:\\Program Files\\Tencent\\WeChat"
+  # 版本检测
+  version_file: "[WeChat]_x64\\WeChat.exe" # 相对于 install_path 的路径
+
+# ── OCR 引擎 ──
+ocr:
+  # 引擎选择：'wechat_native' | 'paddleocr' | 'easyocr'
+  engine: "paddleocr"
+  # 微信原生 OCR 路径（当 engine=wechat_native 时使用）
+  wechat_ocr_exe: "C:\\Program Files\\Tencent\\WeChat\\WeChatOCR.exe"
+  # PaddleOCR 配置
+  paddleocr:
+    lang: "ch"
+    use_angle_cls: false
+    det_db_thresh: 0.3         # 检测阈值（越低越敏感，但可能误检）
+    det_db_box_thresh: 0.5
+    rec_batch_num: 6
+  # OCR 结果缓存时间（秒）
+  cache_ttl: 2.0
+
+# ── 特征匹配 ──
+feature_matching:
+  # 算法选择：'orb' | 'sift'
+  algorithm: "orb"
+  # ORB 特征点数量
+  orb_features: 2000
+  # Lowe's ratio test 阈值（越低越严格）
+  lowe_ratio: 0.65
+  # 最小优质匹配点数
+  min_good_matches: 10
+  # RANSAC 重投影误差阈值
+  ransac_threshold: 5.0
+
+# ── 类人行为模拟 ──
+human_simulation:
+  # 操作间隔基础值（秒）
+  base_delay: 3.0
+  # 延迟分布：Gamma 分布 shape 参数（越大越集中）
+  delay_shape: 3.0
+  # 鼠标移动速度 (px/s, 大约值)
+  mouse_speed: 800
+  # 贝塞尔曲线控制点随机偏移范围 (px)
+  bezier_offset_range: [-80, 80]
+  # 点击位置随机抖动 (px)
+  click_jitter: 3
+  # 多余操作概率（0-1）
+  extra_action_probability: 0.3
+  # 打字速度范围 (WPM, 字/分钟)
+  typing_wpm_range: [60, 100]
+
+# ── 朋友圈操作 ──
+moments:
+  # 文字标签（OCR 查找用，版本无关）
+  labels:
+    nav_moments: "朋友圈"
+    btn_publish: "发表"
+    input_hint: "这一刻的想法"
+    btn_add_photo: "相册"
+    btn_confirm: "发表"
+    msg_success: "已发送"
+  # 图标模板路径（特征匹配用，相对于 templates/icons/）
+  icons:
+    camera_icon: "camera_icon.png"
+    photo_icon: "add_photo_icon.png"
+  # 发布后验证等待时间（秒）
+  publish_verify_timeout: 10.0
+  # 图片上传等待时间（秒）
+  image_upload_timeout: 30.0
+
+# ── 风控与安全 ──
+safety:
+  # 每日操作上限
+  daily_limits:
+    max_posts: 10               # 每天最多发圈数
+    max_likes: 50               # 每天最多点赞数
+    max_comments: 20            # 每天最多评论数
+  # 任务间最小/最大间隔（秒）
+  task_interval_range: [30, 120]
+  # 冷却策略：指数退避底数
+  cooldown_base_minutes: 2
+  # 最大冷却时间（秒），超过则停止当天所有操作
+  max_cooldown_seconds: 21600   # 6 小时
+  # 风控信号检测轮询间隔（秒）
+  risk_check_interval: 5.0
+
+# ── 日志 ──
+logging:
+  level: "INFO"
+  rotation: "10 MB"
+  retention: "7 days"
+  path: "logs/automation_{time}.log"

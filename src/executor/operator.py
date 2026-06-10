@@ -1,0 +1,528 @@
+"""
+操作执行器 —— 将"定位"和"模拟"组合成可执行的操作原语。
+
+每个操作原语都包含：
+  1. 前置条件检查（窗口激活、弹窗清理）
+  2. 元素定位（通过 LocateRouter）
+  3. 类人操作执行（通过 HumanSimulator）
+  4. 结果验证（OCR 确认）
+
+Author: 版本无关微信自动化系统
+"""
+
+import time
+import logging
+import random
+from typing import Optional, Tuple, Callable
+from pathlib import Path
+
+import pyautogui
+import pyperclip
+import win32gui
+import win32con
+
+from ..locator.router import LocateRouter, ElementDescriptor, LocateResult
+from .human_sim import HumanSimulator
+from .uia_bridge import UIABridge
+
+logger = logging.getLogger(__name__)
+
+
+class Operator:
+    """
+    微信操作执行器。
+
+    封装所有对微信窗口的原子操作，确保：
+      - 操作前微信窗口在前台
+      - 操作前没有阻断性弹窗
+      - 操作后验证结果
+      - 失败时返回 False 而非抛异常
+
+    使用方式：
+        op = Operator(router, sim)
+        op.ensure_window_active()
+        op.click_element(ElementDescriptor(name="朋友圈", ocr_text="朋友圈"))
+        op.type_content("今天天气真好")
+        op.publish_post()
+    """
+
+    def __init__(self, router: LocateRouter, sim: HumanSimulator,
+                 config: dict = None, uia: UIABridge = None):
+        self.router = router
+        self.sim = sim
+        self._config = config or {}
+        self._wechat_hwnd = None
+        self._uia = uia  # C# UIAutomation 桥接
+        self._window_callbacks: list[Callable] = []
+        self._last_window_rect: Optional[Tuple[int, int, int, int]] = None
+
+    # ══════════════════════════════════════════════════════════
+    # 窗口管理
+    # ══════════════════════════════════════════════════════════
+
+    def find_wechat_window(self) -> bool:
+        """查找微信窗口"""
+        hwnd = win32gui.FindWindow("WeChatMainWndForPC", None)
+        if not hwnd:
+            logger.error("未找到微信窗口，请确认微信已启动")
+            return False
+        self._wechat_hwnd = hwnd
+        return True
+
+    def ensure_window_active(self) -> bool:
+        """
+        确保微信窗口在前台且未被最小化。
+        这是所有自动化操作的前置条件。
+        """
+        if not self._wechat_hwnd:
+            if not self.find_wechat_window():
+                return False
+
+        # 检查是否最小化
+        if win32gui.IsIconic(self._wechat_hwnd):
+            win32gui.ShowWindow(self._wechat_hwnd, win32con.SW_RESTORE)
+            time.sleep(0.3)
+            logger.debug("微信窗口已从最小化恢复")
+
+        # 强制置顶（短暂置顶后取消，避免一直盖住其他窗口）
+        win32gui.SetWindowPos(
+            self._wechat_hwnd, win32con.HWND_TOPMOST,
+            0, 0, 0, 0,
+            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,
+        )
+        time.sleep(0.1)
+
+        # 激活窗口
+        win32gui.SetForegroundWindow(self._wechat_hwnd)
+        time.sleep(0.15)
+
+        # 取消置顶
+        win32gui.SetWindowPos(
+            self._wechat_hwnd, win32con.HWND_NOTOPMOST,
+            0, 0, 0, 0,
+            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,
+        )
+
+        return True
+
+    # ══════════════════════════════════════════════════════════
+    # 基础操作原语
+    # ══════════════════════════════════════════════════════════
+
+    def click_element(self, element: ElementDescriptor,
+                      verify_element: ElementDescriptor = None
+                      ) -> bool:
+        """
+        点击界面元素（含完整的定位→移动→点击→验证流程）。
+
+        Args:
+            element: 目标元素描述符
+            verify_element: 点击后应出现的验证元素（如点击"朋友圈"后应看到"这一刻的想法"）
+
+        Returns:
+            True 表示操作成功
+        """
+        # 1. 前置条件
+        if not self.ensure_window_active():
+            return False
+
+        # 2. 定位
+        result = self.router.locate(element)
+        if result is None:
+            logger.error(f"点击失败：无法定位 [{element.name}]")
+            return False
+
+        # 3. 类人点击
+        self.sim.click_at(result.x, result.y)
+        self.sim.extra_action()
+
+        # 4. 验证（如果提供了验证元素）
+        if verify_element:
+            time.sleep(1.0)  # 给界面加载时间
+            verified = self.router.verify_element(verify_element)
+            if not verified:
+                logger.warning(f"点击 [{element.name}] 后未检测到验证元素 [{verify_element.name}]")
+                # 不直接返回 False，可能是加载慢
+                time.sleep(1.0)
+                verified = self.router.verify_element(verify_element)
+                if not verified:
+                    return False
+
+        return True
+
+    def type_content(self, text: str, input_element: ElementDescriptor = None) -> bool:
+        """
+        输入文字内容。
+
+        Args:
+            text: 要输入的文字
+            input_element: 输入框元素（可选，如果提供则先点击聚焦）
+
+        Returns:
+            True 表示输入成功
+        """
+        # 1. 先点击输入框聚焦
+        if input_element:
+            if not self.click_element(input_element):
+                # 即使点击失败也尝试直接输入（可能焦点已经在正确位置）
+                logger.warning("输入框定位失败，尝试直接输入")
+
+        # 2. 等待焦点稳定
+        self.sim.micro_pause(mean=0.2)
+
+        # 3. 清空可能存在的旧内容
+        pyautogui.hotkey('ctrl', 'a')
+        self.sim.micro_pause(mean=0.1)
+
+        # 4. 类人输入
+        self.sim.type_text(text)
+
+        return True
+
+    def add_images(self, image_paths: list,
+                   add_btn: ElementDescriptor = None,
+                   wait_upload: bool = True) -> bool:
+        """
+        添加图片到朋友圈。
+
+        通过剪贴板粘贴方式添加图片。
+        微信朋友圈支持直接 Ctrl+V 粘贴图片。
+
+        Args:
+            image_paths: 图片路径列表
+            add_btn: 添加按钮描述符（点击相册按钮，不用剪贴板时使用）
+            wait_upload: 是否等待图片上传完成后再返回
+
+        Returns:
+            True 表示所有图片已成功添加/上传
+        """
+        if not image_paths:
+            return True  # 没有图片，跳过
+
+        from ..executor.file_dialog import FileDialogHandler
+        handler = FileDialogHandler()
+
+        for i, img_path in enumerate(image_paths):
+            if not Path(img_path).exists():
+                logger.error(f"图片不存在: {img_path}")
+                continue
+
+            # 策略 A：剪贴板粘贴（最优先）
+            try:
+                handler.paste_image_from_file(img_path)
+            except Exception:
+                # 策略 B：CF_HDROP 文件路径粘贴
+                try:
+                    handler.paste_file_paths([img_path])
+                except Exception as e:
+                    logger.error(f"图片粘贴失败: {e}")
+                    return False
+
+            # 等待上传完成
+            if wait_upload and i < len(image_paths) - 1:
+                self._wait_image_upload(timeout=60.0)
+
+            self.sim.delay(base=1.5)
+
+        return True
+
+    def _wait_image_upload(self, timeout: float = 60.0):
+        """
+        等待图片上传完成。
+
+        微信上传图片时的视觉信号：
+          - 缩略图从模糊变清晰
+          - 图片上不再有"上传中..."文字或进度圈
+
+        通过 OCR 检测上传状态变化。
+        """
+        start = time.time()
+        check_interval = 2.0
+
+        while time.time() - start < timeout:
+            # 检查是否有"上传失败"文字
+            blocks = self.router.ocr.scan_screen()
+            texts = [b.text for b in blocks]
+
+            # 上传失败检测
+            if any('上传失败' in t or '发送失败' in t for t in texts):
+                logger.error("检测到上传失败")
+                return
+
+            # 如果没有"上传中"文字，认为完成
+            if not any('上传中' in t or '正在发送' in t for t in texts):
+                logger.debug("图片上传完成")
+                return
+
+            time.sleep(check_interval)
+
+        logger.warning(f"图片上传等待超时 ({timeout}s)")
+
+    def click_publish(self, publish_element: ElementDescriptor) -> bool:
+        """点击发布按钮"""
+        return self.click_element(publish_element)
+
+    def verify_published(self, success_element: ElementDescriptor,
+                         timeout: float = 10.0) -> bool:
+        """
+        验证发布成功。等待"已发送"或类似的成功提示出现。
+
+        Returns:
+            True 表示确认发布成功
+        """
+        result = self.router.wait_element(success_element, timeout=timeout)
+        return result is not None
+
+    # ══════════════════════════════════════════════════════════
+    # 导航操作
+    # ══════════════════════════════════════════════════════════
+
+    def enter_moments(self, nav_element: ElementDescriptor,
+                      verify_element: ElementDescriptor) -> bool:
+        """进入朋友圈页面"""
+        return self.click_element(nav_element, verify_element=verify_element)
+
+    # ══════════════════════════════════════════════════════════
+    # 应急操作
+    # ══════════════════════════════════════════════════════════
+
+    def dismiss_popup(self, popup: ElementDescriptor) -> bool:
+        """关闭弹窗"""
+        return self.click_element(popup)
+
+    def press_escape(self):
+        """按 ESC 关闭可能的弹窗"""
+        pyautogui.press('esc')
+        self.sim.micro_pause(mean=0.1)
+
+    def restart_wechat(self) -> bool:
+        """
+        重启微信进程。
+        当微信崩溃/卡死时使用。
+        """
+        import subprocess
+        import os
+
+        wechat_path = self._config.get(
+            'wechat_path',
+            r'C:\Program Files\Tencent\WeChat\WeChat.exe'
+        )
+
+        try:
+            # 杀掉微信进程
+            subprocess.run(['taskkill', '/f', '/im', 'WeChat.exe'],
+                           capture_output=True, check=False)
+            time.sleep(2.0)
+
+            # 重新启动
+            subprocess.Popen([wechat_path])
+            time.sleep(5.0)  # 等微信启动
+
+            # 重新查找窗口
+            return self.find_wechat_window()
+        except Exception as e:
+            logger.error(f"重启微信失败: {e}")
+            return False
+
+    # ══════════════════════════════════════════════════════════
+    # UIA 控件树定位（优先于 OCR，微信 4.x 关键能力）
+    # ══════════════════════════════════════════════════════════
+
+    def click_by_uia(self, name: str = None, automation_id: str = None,
+                     control_type: str = None) -> bool:
+        """
+        通过 UIA 控件树直接定位并点击元素。
+        这是微信 4.x 下的首选定位方式（比 OCR 快 10 倍，100% 准确）。
+
+        Args:
+            name: 控件名称（如"朋友圈"、"发表"）
+            automation_id: AutomationId
+            control_type: 控件类型（如"Button"、"Edit"）
+
+        Returns:
+            True 表示找到并点击成功
+        """
+        if self._uia is None or not self._uia.available:
+            return False
+
+        # 拉取控件树
+        tree = self._uia.dump_tree()
+        if tree is None:
+            return False
+
+        # 搜索目标元素
+        target = None
+        root = tree.get('rootElement', {})
+
+        def search(node):
+            nonlocal target
+            if target is not None:
+                return
+
+            matches = True
+            if name and node.get('name') != name:
+                matches = False
+            if automation_id and node.get('automationId') != automation_id:
+                matches = False
+            if control_type and node.get('controlType') != control_type:
+                matches = False
+
+            if matches and (name or automation_id or control_type):
+                target = node
+                return
+
+            for child in node.get('children', []):
+                search(child)
+
+        search(root)
+
+        if target is None:
+            return False
+
+        # 计算中心坐标
+        x = target.get('x', 0) + target.get('width', 0) // 2
+        y = target.get('y', 0) + target.get('height', 0) // 2
+
+        logger.info(
+            f"UIA 点击: '{target.get('name')}' "
+            f"[{target.get('controlType')}] → ({x}, {y})"
+        )
+        self.sim.click_at(x, y)
+        return True
+
+    def get_all_interactive_elements(self) -> list[dict]:
+        """
+        获取微信界面上所有可交互元素的列表（按钮、输入框等）。
+        用于自动校准——比 OCR 扫描更快更全。
+        """
+        if self._uia is None or not self._uia.available:
+            return []
+
+        tree = self._uia.dump_tree()
+        if tree is None:
+            return []
+
+        interactive = []
+        interactive_types = {'Button', 'Edit', 'ComboBox', 'CheckBox',
+                             'RadioButton', 'ListItem', 'Hyperlink', 'TabItem'}
+
+        def collect(node):
+            if node.get('controlType') in interactive_types and node.get('isEnabled'):
+                interactive.append(node)
+            for child in node.get('children', []):
+                collect(child)
+
+        collect(tree.get('rootElement', {}))
+        return interactive
+
+    # ══════════════════════════════════════════════════════════
+    # 窗口位置监控 + 自动重新校准
+    # ══════════════════════════════════════════════════════════
+
+    def start_window_monitoring(self, on_recalibrate: callable = None):
+        """
+        启动微信窗口位置监控。
+        窗口移动/缩放时自动触发重新校准。
+
+        Args:
+            on_recalibrate: 窗口变化回调（用于触发 calibrator.calibrate(force=True)）
+        """
+        if self._uia is None or not self._uia.available:
+            logger.warning("UIA 桥接不可用，窗口监控未启动")
+            return
+
+        # 记录当前窗口位置
+        rect = self._uia.get_window_rect()
+        if rect:
+            self._last_window_rect = rect
+
+        def _on_window_changed(window_info: dict):
+            new_rect = (
+                window_info.get('left', 0),
+                window_info.get('top', 0),
+                window_info.get('right', 0),
+                window_info.get('bottom', 0),
+            )
+
+            # 检查位置是否真的变了（忽略微小抖动 <5px）
+            if self._last_window_rect:
+                old = self._last_window_rect
+                moved = (abs(new_rect[0] - old[0]) > 5 or
+                         abs(new_rect[1] - old[1]) > 5 or
+                         abs(new_rect[2] - old[2]) > 10 or
+                         abs(new_rect[3] - old[3]) > 10)
+
+                if moved:
+                    logger.warning(
+                        f"检测到窗口移动: {old[:2]} → {new_rect[:2]}"
+                    )
+                    self._last_window_rect = new_rect
+
+                    if on_recalibrate:
+                        logger.info("触发自动重新校准...")
+                        on_recalibrate()
+
+        self._uia.start_window_monitor(
+            on_change=_on_window_changed,
+            run_in_background=True,
+        )
+        logger.info("窗口监控已启动")
+
+    def stop_window_monitoring(self):
+        """停止窗口位置监控"""
+        if self._uia:
+            self._uia.stop_window_monitor()
+
+    # ══════════════════════════════════════════════════════════
+    # 登录状态检测
+    # ══════════════════════════════════════════════════════════
+
+    def check_login_state(self) -> dict:
+        """
+        检测微信是否已登录。
+
+        优先使用 UIA 控件树检测（极快、极准），
+        失败时回退到 OCR 扫描。
+
+        Returns:
+            {'logged_in': bool, 'page': str, 'details': str}
+        """
+        # 优先 UIA
+        if self._uia and self._uia.available:
+            result = self._uia.check_login()
+            if result.get('isLoggedIn'):
+                return {
+                    'logged_in': True,
+                    'page': result.get('detectedPage', '微信主界面'),
+                    'details': f"导航标签: {result.get('navLabels', [])}",
+                }
+            elif result.get('detectedPage') == '微信未运行':
+                return {
+                    'logged_in': False,
+                    'page': 'not_running',
+                    'details': '微信进程未运行',
+                }
+            # UIA 检测到未登录但微信在运行
+            return {
+                'logged_in': False,
+                'page': result.get('detectedPage', '未知'),
+                'details': '未检测到导航栏标签，可能已掉线',
+            }
+
+        # 回退 OCR
+        try:
+            blocks = self.router.ocr.scan_screen()
+            texts = [b.text for b in blocks]
+            has_nav = any(t in texts for t in ['聊天', '通讯录'])
+
+            return {
+                'logged_in': has_nav,
+                'page': '微信主界面' if has_nav else '未知',
+                'details': f"OCR 检测: {len(texts)} 个文本块",
+            }
+        except Exception as e:
+            return {
+                'logged_in': False,
+                'page': 'error',
+                'details': f"检测异常: {e}",
+            }

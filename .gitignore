@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# C# build artifacts
+src/cs_uia_service/bin/
+src/cs_uia_service/obj/
+src/cs_uia_service/publish/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Templates (auto-generated at runtime)
+templates/icons/*.png
+templates/icons/*.ico
+
+# Debug screenshots
+debug_screenshots/
+
+# Environment
+.env
+.env.local
+
+# Compiled hook DLL
+src/hook/*.dll

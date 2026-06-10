@@ -1,0 +1,32 @@
+# 版本无关的 PC 微信朋友圈自动化系统
+# ── 核心依赖 ──
+opencv-python>=4.8.0          # 特征匹配 + 模板匹配（SIFT/ORB）
+opencv-contrib-python>=4.8.0  # SIFT 专利算法（可选，ORB 够用可不装）
+pyautogui>=0.9.54             # 截图 + 键鼠模拟
+pynput>=1.7.6                 # 更精细的键鼠控制（备选）
+pyperclip>=1.8.2              # 剪贴板操作
+numpy>=1.24.0                 # 数组运算
+Pillow>=10.0.0                # 图像处理
+
+# ── OCR 引擎（二选一或都装） ──
+paddleocr>=2.7.0              # PaddleOCR（推荐，中文最优）
+# easyocr>=1.7.0               # EasyOCR（备选）
+
+# ── Windows API ──
+pywin32>=306                  # win32gui/win32con 窗口操作
+
+# ── PE 资源提取 ──
+pefile>=2023.2.7              # PE 文件解析（从 WeChatWin.dll 提取图标资源）
+# icoextract                   # ICO → PNG 转换（可选，Pillow 已支持 ICO）
+
+# ── 文件对话框自动化 ──
+pywinauto>=0.6.8              # Windows 对话框操控（推荐）
+# pynput>=1.7.6               # 上面已列出
+
+# ── 工具库 ──
+PyYAML>=6.0                   # 配置文件解析
+loguru>=0.7.0                 # 结构化日志（比 logging 好用）
+dataclasses-json>=0.6.0       # 数据类序列化（Python 3.10 内建 dataclasses）
+
+# ── 可选 ──
+# onnxruntime>=1.15.0          # PaddleOCR ONNX 加速（需 GPU 则装 onnxruntime-gpu）
