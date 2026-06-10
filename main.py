@@ -135,6 +135,9 @@ def parse_args():
     parser.add_argument('--interactive', action='store_true', help='交互模式')
     parser.add_argument('--schedule', action='store_true', help='定时调度模式（后台运行）')
     parser.add_argument('--status', action='store_true', help='查看系统状态')
+    parser.add_argument('--calibrate', action='store_true', help='手动触发界面校准')
+    parser.add_argument('--extract-templates', action='store_true', help='提取/更新图标模板库')
+    parser.add_argument('--test', action='store_true', help='运行自检（不操作微信）')
     parser.add_argument('--dry-run', action='store_true', help='空跑模式')
     parser.add_argument('--resume', action='store_true', help='从上次中断恢复')
     return parser.parse_args()
@@ -271,6 +274,105 @@ def print_status(publisher: EventDrivenPublisher):
     print("=" * 40)
 
 
+# ═══════════════════════════════════════════════════════════════
+# 自检
+# ═══════════════════════════════════════════════════════════════
+
+def run_self_test(publisher) -> int:
+    """运行启动前自检，报告各项依赖和状态"""
+    print("=" * 50)
+    print("  🔍 系统自检")
+    print("=" * 50)
+
+    results = []
+
+    # 1. Python 依赖
+    checks = [
+        ('opencv-python', 'cv2', 'OpenCV'),
+        ('pyautogui', 'pyautogui', 'PyAutoGUI'),
+        ('pywin32', 'win32gui', 'Windows API'),
+        ('numpy', 'numpy', 'NumPy'),
+        ('Pillow', 'PIL', 'Pillow'),
+        ('PyYAML', 'yaml', 'YAML'),
+    ]
+    for _, mod, name in checks:
+        try:
+            __import__(mod)
+            results.append(('✅', name, '已安装'))
+        except ImportError:
+            results.append(('❌', name, '未安装 — pip install'))
+
+    # 2. OCR 引擎
+    try:
+        from paddleocr import PaddleOCR
+        results.append(('✅', 'PaddleOCR', '可用'))
+    except ImportError:
+        results.append(('⚠️', 'PaddleOCR', '未安装 — 可选；微信原生 OCR 也不可用时需安装'))
+
+    try:
+        from src.locator.wechat_native_ocr import WeChatOCREngine
+        engine = WeChatOCREngine()
+        if engine.is_available:
+            results.append(('✅', '微信 OCR', '可用'))
+        else:
+            results.append(('⚠️', '微信 OCR', 'WeChatOCR.exe 未找到，回退至 PaddleOCR'))
+    except Exception:
+        results.append(('⚠️', '微信 OCR', '初始化异常'))
+
+    # 3. C# UIA 服务
+    uia_exe = Path(__file__).parent / 'src' / 'cs_uia_service' / 'publish' / 'WeChatUIA.exe'
+    if uia_exe.exists():
+        results.append(('✅', 'C# UIA 服务', f'已编译 ({uia_exe.stat().st_size // 1024}KB)'))
+    else:
+        results.append(('⚠️', 'C# UIA 服务', '未编译 — 系统回退至纯 OCR 模式，部分功能受限'))
+
+    # 4. .NET SDK
+    import subprocess
+    try:
+        r = subprocess.run(['dotnet', '--version'], capture_output=True, text=True, timeout=5)
+        results.append(('✅', '.NET SDK', r.stdout.strip()))
+    except Exception:
+        results.append(('⚠️', '.NET SDK', '未安装 — C# 服务无法编译'))
+
+    # 5. 微信进程
+    try:
+        import win32gui
+        hwnd = win32gui.FindWindow("WeChatMainWndForPC", None)
+        if hwnd:
+            results.append(('✅', '微信进程', '运行中'))
+        else:
+            results.append(('❌', '微信进程', '未找到 — 请启动微信'))
+    except Exception:
+        results.append(('⚠️', '微信进程', '无法检测'))
+
+    # 6. 目录结构
+    for d in ['templates/icons', 'logs']:
+        p = Path(__file__).parent / d
+        if p.exists():
+            results.append(('✅', f'目录 {d}', '存在'))
+        else:
+            results.append(('⚠️', f'目录 {d}', '不存在'))
+
+    # 7. 模板数量
+    icons_dir = Path(__file__).parent / 'templates' / 'icons'
+    png_count = len(list(icons_dir.glob('*.png'))) if icons_dir.exists() else 0
+    if png_count > 0:
+        results.append(('✅', '图标模板', f'{png_count} 个'))
+    else:
+        results.append(('⚠️', '图标模板', '0 个 — 首次运行时会自动生成'))
+
+    # 打印报告
+    for status, name, detail in results:
+        print(f"  {status} {name:20s} {detail}")
+
+    passed = sum(1 for s, _, _ in results if s == '✅')
+    warnings = sum(1 for s, _, _ in results if s == '⚠️')
+    errors = sum(1 for s, _, _ in results if s == '❌')
+
+    print(f"\n  结果: {passed} 通过, {warnings} 警告, {errors} 错误")
+    return 1 if errors > 0 else 0
+
+
 def main():
     global _publisher_ref
 
@@ -299,6 +401,25 @@ def main():
             prev = load_state()
             if prev:
                 print(f"📂 上次运行: {prev.get('saved_at', 'unknown')}")
+
+        # 自检模式
+        if args.test:
+            return run_self_test(publisher)
+
+        # 手动校准
+        if args.calibrate:
+            print("🔄 手动触发界面校准...")
+            mapping = publisher.calibrator.calibrate(force=True)
+            print(f"✅ 校准完成: {len(mapping.anchors)} 个锚点")
+            return 0
+
+        # 提取模板
+        if args.extract_templates:
+            print("🖼️ 提取图标模板...")
+            from src.locator.template_extractor import update_all_templates
+            count = update_all_templates(publisher.ocr)
+            print(f"✅ 模板提取完成: {count} 个")
+            return 0
 
         # 交互模式
         if args.interactive:
