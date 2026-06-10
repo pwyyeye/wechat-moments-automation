@@ -14,69 +14,81 @@
  */
 
 // ============================================================
-// Phase 1: Hook Mojo Send — 捕获所有 Mojo IPC 消息
+// Phase 0: 探明实际导出名
 // ============================================================
 
+function listMojoExports() {
+    var mojoModule = Process.findModuleByName("mmmojo_64.dll");
+    if (!mojoModule) return;
+
+    console.log("[*] mmmojo_64.dll exports:");
+    var exports = mojoModule.enumerateExports();
+    exports.forEach(function(e) {
+        if (e.type === 'function') {
+            console.log("    " + e.name + " @ " + e.address);
+        }
+    });
+}
+
+// ============================================================
+// Phase 1: Hook Mojo Send — 用实际导出名
+// ============================================================
+
+var MOJO_HOOKED = false;
+
 function hookMojoSend() {
+    if (MOJO_HOOKED) return true;
+
     var mojoModule = Process.findModuleByName("mmmojo_64.dll");
     if (!mojoModule) {
-        console.log("[!] mmmojo_64.dll not loaded yet, waiting...");
         return false;
     }
 
     console.log("[+] mmmojo_64.dll base: " + mojoModule.base);
 
-    // Hook SendMMMojoWriteInfo
-    var sendAddr = Module.findExportByName("mmmojo_64.dll", "SendMMMojoWriteInfo");
-    if (sendAddr) {
-        Interceptor.attach(sendAddr, {
-            onEnter: function(args) {
-                // args[0] = handle, args[1] = write_info struct
-                this.handle = args[0];
-                this.writeInfo = args[1];
-            },
-            onLeave: function(retval) {
-                console.log("[Mojo Send] handle=" + this.handle + " result=" + retval);
-            }
-        });
-        console.log("[+] Hooked SendMMMojoWriteInfo at " + sendAddr);
-    }
+    // 先列出实际导出
+    listMojoExports();
 
-    // Hook SwapMMMojoWriteInfoCallback — 拦截消息回调
-    var swapAddr = Module.findExportByName("mmmojo_64.dll", "SwapMMMojoWriteInfoCallback");
-    if (swapAddr) {
-        Interceptor.attach(swapAddr, {
-            onEnter: function(args) {
-                this.info = args[0];
-                this.callback = args[1];
-                console.log("[Mojo SwapCallback] info=" + this.info + " callback=" + this.callback);
-            }
-        });
-        console.log("[+] Hooked SwapMMMojoWriteInfoCallback at " + swapAddr);
-    }
+    // Hook Send 函数 (所有包含 Send 的导出)
+    var exports = mojoModule.enumerateExports();
+    var hooked = 0;
 
-    // Hook SwapMMMojoWriteInfoMessage — 拦截消息数据
-    var swapMsgAddr = Module.findExportByName("mmmojo_64.dll", "SwapMMMojoWriteInfoMessage");
-    if (swapMsgAddr) {
-        Interceptor.attach(swapMsgAddr, {
-            onEnter: function(args) {
-                this.info = args[0];
-                this.buffer = args[1];
-                this.size = args[2];
-                // dump the protobuf message
-                if (this.buffer && this.size && this.size.toInt32() > 0) {
-                    var size = this.size.toInt32();
-                    if (size > 10 && size < 100000) {
-                        console.log("[Mojo Message] size=" + size);
-                        console.log(hexdump(this.buffer, {length: Math.min(size, 512)}));
+    exports.forEach(function(e) {
+        if (e.type !== 'function') return;
+
+        // Hook 所有 Send 和 Swap 函数
+        if (e.name.indexOf('Send') >= 0 || e.name.indexOf('Swap') >= 0) {
+            try {
+                Interceptor.attach(e.address, {
+                    onEnter: function(args) {
+                        var funcName = e.name;
+                        // 只对 SwapMessage 打印 hexdump（最可能携带消息数据）
+                        if (funcName.indexOf('Message') >= 0 && args[1] && !args[1].isNull()) {
+                            try {
+                                var size = args[2] ? args[2].toInt32() : 256;
+                                if (size > 10 && size < 100000) {
+                                    console.log("\n[Mojo " + funcName + "] size=" + size);
+                                    console.log(hexdump(args[1], {length: Math.min(size, 512)}));
+                                }
+                            } catch(ex) {}
+                        } else {
+                            console.log("[Mojo] " + funcName + " called");
+                        }
                     }
-                }
+                });
+                hooked++;
+                console.log("[+] Hooked " + e.name + " at " + e.address);
+            } catch(ex) {
+                console.log("[-] Failed to hook " + e.name + ": " + ex);
             }
-        });
-        console.log("[+] Hooked SwapMMMojoWriteInfoMessage at " + swapMsgAddr);
-    }
+        }
+    });
 
-    return true;
+    if (hooked > 0) {
+        MOJO_HOOKED = true;
+        console.log("[+] Hooked " + hooked + " Mojo functions");
+    }
+    return MOJO_HOOKED;
 }
 
 // ============================================================
@@ -159,24 +171,12 @@ function searchMojoServices() {
 console.log("[*] WeChat SNS Mojo Hook v0.1");
 console.log("[*] Waiting for mmmojo_64.dll...");
 
-// 等待 DLL 加载
-var mojoHooked = false;
-var checkInterval = setInterval(function() {
-    if (!mojoHooked) {
-        mojoHooked = hookMojoSend();
-        if (mojoHooked) {
-            hookSNSFunctions();
-            searchMojoServices();
-        }
-    }
-}, 2000);
-
-// 30秒后停止检查
+// 只尝试一次（DLL 已经加载了）
 setTimeout(function() {
-    clearInterval(checkInterval);
-    if (!mojoHooked) {
-        console.log("[!] mmmojo_64.dll not found after 30s. Is WeChat (Weixin.exe) running?");
+    if (hookMojoSend()) {
+        hookSNSFunctions();
+        searchMojoServices();
     }
-}, 30000);
+}, 1000);
 
 console.log("[*] Hook script active. Trigger a Moments post to capture Mojo messages.");
