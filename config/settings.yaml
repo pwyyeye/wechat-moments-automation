@@ -90,6 +90,24 @@ safety:
   # 风控信号检测轮询间隔（秒）
   risk_check_interval: 5.0
 
+# ── 通知 ──
+notifications:
+  # Telegram Bot（推荐）
+  telegram_bot_token: ""         # 从 @BotFather 获取
+  telegram_chat_id: ""           # 从 getUpdates 获取
+  # 邮件（SMTP）
+  email_smtp_host: ""
+  email_smtp_port: 465
+  email_user: ""
+  email_pass: ""
+  email_to: ""
+  # 通知策略
+  notify_on_success: false       # 发布成功时通知（可能刷屏）
+  notify_on_failure: true        # 发布失败时通知
+  notify_on_risk: true           # 风控触发时通知
+  notify_on_login_lost: true     # 掉线时通知
+  notify_on_version_change: true # 微信更新时通知
+
 # ── 日志 ──
 logging:
   level: "INFO"

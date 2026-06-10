@@ -48,8 +48,10 @@ from ..executor.human_sim import HumanSimulator, SimulationConfig
 from ..executor.operator import Operator
 from ..executor.uia_bridge import UIABridge
 from ..executor.file_dialog import FileDialogHandler
+from ..executor.version_detector import VersionDetector
 from ..monitor.risk_detector import RiskDetector
 from ..monitor.popup_handler import PopupHandler
+from ..monitor.notifier import Notifier, create_notifier_from_config
 from ..recovery.error_recovery import ErrorRecovery
 from .events import EventBus, Event, EventType, global_event_bus
 from .watchers import WatchManager
@@ -145,6 +147,12 @@ class EventDrivenPublisher:
         self.popup_handler = PopupHandler(self.ocr, self.router)
         self.recovery = ErrorRecovery(self.operator, self.popup_handler, self.risk_detector)
 
+        # 版本检测
+        self.version_detector = VersionDetector()
+
+        # 通知系统
+        self.notifier = create_notifier_from_config(self._config)
+
     def _setup_event_handlers(self):
         """注册全局事件处理器"""
         # 窗口移动 → 重新校准
@@ -160,6 +168,11 @@ class EventDrivenPublisher:
         # 掉线 → 停止一切
         self.bus.on(EventType.LOGIN_LOST, self._on_login_lost)
 
+        # 步骤失败 → 通知
+        self.bus.on(EventType.STEP_FAILED, self.notifier.handle_event)
+        self.bus.on(EventType.RISK_WARNING, self.notifier.handle_event)
+        self.bus.on(EventType.RISK_CRITICAL, self.notifier.handle_event)
+
     # ══════════════════════════════════════════════════════════
     # 公共接口
     # ══════════════════════════════════════════════════════════
@@ -167,6 +180,24 @@ class EventDrivenPublisher:
     def initialize(self) -> bool:
         """初始化：校准 + 启动所有 Watcher + 登录检测"""
         logger.info("事件驱动发布器初始化...")
+
+        # 0. 检测微信版本变化
+        current_ver = self.version_detector.get_version()
+        if current_ver:
+            logger.info(f"当前微信版本: {current_ver.raw}")
+
+        version_changed = self.version_detector.is_version_changed()
+        if version_changed:
+            logger.info("微信版本已变化，将触发自动重建")
+            self.notifier.info(
+                "微信版本变化",
+                f"检测到微信版本变化: {current_ver.raw if current_ver else 'unknown'}"
+            )
+
+        # 0.5 确保模板库非空（首次运行自动生成）
+        template_count = self.version_detector.ensure_templates(self.ocr)
+        if template_count > 0:
+            logger.info(f"图标模板就绪: {template_count} 个")
 
         # 1. 窗口
         if not self.operator.find_wechat_window():
@@ -180,8 +211,13 @@ class EventDrivenPublisher:
             logger.error(f"未登录: {login_state['details']}")
             return False
 
-        # 3. 校准
-        mapping = self.calibrator.calibrate()
+        # 3. 校准（如果版本变化则强制重建）
+        mapping = self.calibrator.calibrate(force=version_changed)
+
+        # 3.5 版本变化时重建模板 + 标记新版本
+        if version_changed:
+            self.version_detector.trigger_rebuild(self.calibrator, self.ocr)
+            self.version_detector.mark_current_version()
 
         # 4. 启动所有 Watcher（事件源）
         self._watch_manager = WatchManager(self.bus, self.ocr, self.uia)
