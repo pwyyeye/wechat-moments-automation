@@ -36,6 +36,7 @@ from typing import Optional, List
 from pathlib import Path
 
 import pyautogui
+import win32gui
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -223,6 +224,14 @@ class FileDialogHandler:
     # 策略 B：pywinauto 操控文件对话框
     # ══════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _foreground_file_dialog() -> Optional[int]:
+        """Return the foreground standard file dialog without relying on localized titles."""
+        hwnd = win32gui.GetForegroundWindow()
+        if hwnd and win32gui.GetClassName(hwnd) == '#32770':
+            return hwnd
+        return None
+
     def select_file_via_pywinauto(self, file_path: str,
                                   dialog_title: str = "打开",
                                   timeout: float = 10.0) -> bool:
@@ -246,51 +255,52 @@ class FileDialogHandler:
             logger.warning("pywinauto 不可用，回退到策略 C")
             return self.select_file_via_sendkeys(file_path)
 
-        from pywinauto.application import Application
-        from pywinauto.timings import wait_until
+        from pywinauto import Desktop
 
         file_path = str(Path(file_path).resolve())
         logger.info(f"pywinauto: 选择文件 {Path(file_path).name}")
 
         try:
-            # 连接到文件对话框（UIA backend 支持现代 Windows 对话框）
-            app = Application(backend="uia")
-
-            # 等待对话框出现
+            # Windows 4.x 微信可能返回乱码标题，使用标准对话框类和 UIA ID。
             start_time = time.time()
             dlg = None
 
             while time.time() - start_time < timeout:
-                try:
-                    dlg = app.connect(title=dialog_title).window(title=dialog_title)
-                    if dlg.exists():
-                        break
-                except Exception:
-                    pass
+                hwnd = self._foreground_file_dialog()
+                if hwnd:
+                    try:
+                        dlg = Desktop(backend="uia").window(handle=hwnd)
+                        if dlg.exists():
+                            break
+                    except Exception:
+                        dlg = None
                 time.sleep(0.3)
 
             if dlg is None:
-                logger.error(f"未找到文件对话框 (标题='{dialog_title}')")
+                logger.error(
+                    f"未找到前台标准文件对话框 (期望标题='{dialog_title}')"
+                )
                 return False
 
-            # 方法 1：直接在文件名编辑框中设置路径
-            # 文件名编辑框通常是名为 "文件名(N):" 或 "File name:" 的 Edit 控件
-            edit_control = None
+            # 标准文件对话框中，1148 是文件名输入框，1 是确认按钮。
+            edit_control = dlg.child_window(auto_id="1148", control_type="Edit")
+            open_button = dlg.child_window(auto_id="1", control_type="Button")
+            if edit_control.exists() and open_button.exists():
+                edit_control.set_edit_text(file_path)
+                time.sleep(0.3)
+                open_button.click()
+                logger.info("文件对话框已确认")
+                return True
 
-            for edit_name in ['文件名(N):', '文件名:', 'File name:', '文件名(N)']:
-                try:
-                    edit_control = dlg.Edit
-                    # 如果有多个 Edit 控件，找包含文件名相关标签的那个
-                    for child in dlg.descendants(control_type="Edit"):
-                        if child.is_enabled():
-                            edit_control = child
-                            break
-                    break
-                except Exception:
-                    continue
+            # 兼容旧版对话框：回退到名称和控件类型。
+            edit_control = None
+            for child in dlg.descendants(control_type="Edit"):
+                if child.is_enabled() and child.element_info.automation_id != "SearchEditBox":
+                    edit_control = child
+                    if child.element_info.automation_id == "1148":
+                        break
 
             if edit_control:
-                # 选中已有内容并填入路径
                 edit_control.set_edit_text('')
                 edit_control.type_keys(file_path, with_spaces=True)
                 time.sleep(0.3)

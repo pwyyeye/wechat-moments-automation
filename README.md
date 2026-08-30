@@ -2,7 +2,7 @@
 
 版本无关的 PC 微信朋友圈自动化。事件驱动架构 + 语义级定位 + 三层集成。
 
-[![Tests](https://img.shields.io/badge/tests-44%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-66%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![.NET](https://img.shields.io/badge/.NET-10.0-purple)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
@@ -19,8 +19,11 @@ setup.bat
 venv\Scripts\activate
 python main.py --test
 
-# 发朋友圈
-python main.py --text "今天天气真好"
+# 安全预览：准备内容后停在编辑页，不点击“发表”
+python main.py --text "今天天气真好" --images photo1.jpg
+
+# 明确授权后才点击“发表”
+python main.py --text "今天天气真好" --images photo1.jpg --confirm-publish
 
 # 交互模式
 python main.py --interactive
@@ -65,6 +68,8 @@ Core Engine:
 ```bash
 # CLI
 python main.py --text "文字内容" --images photo1.jpg
+python main.py --text "文字内容" --images photo1.jpg --confirm-publish
+python main.py --text "文字内容" --images photo1.jpg --dry-run
 python main.py --batch posts.txt
 python main.py --interactive
 python main.py --schedule
@@ -116,6 +121,8 @@ Dashboard + Composer + Schedule + History，集成指南:
 | .NET SDK | 8.0+ (可选) | C# UIA 微服务 |
 | 微信 | PC 版 3.9+ | 目标应用 |
 
+Windows 微信 4.x 使用独立的“朋友圈”窗口。当前桌面流程需要至少一张图片来打开编辑页；默认只准备内容并停在发表前，只有传入 `--confirm-publish` 才会执行最终点击。
+
 ## 安装
 
 ```bash
@@ -143,7 +150,7 @@ python main.py --test
 
 ```bash
 python -m pytest tests/ -v
-# 44 passed, 0 failed
+# 66 passed, 0 failed
 ```
 
 ## 文件结构
@@ -157,7 +164,7 @@ src/monitor/     监控层 (3 模块)
 src/recovery/    恢复层
 src/cs_uia_service/  C# UIA 微服务
 integrations/    外部集成 (OpenClaw + Electron)
-tests/           测试 (44 tests)
+tests/           测试 (66 tests)
 ```
 
 ## 免责声明

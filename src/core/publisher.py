@@ -37,8 +37,8 @@ Author: 版本无关微信自动化系统
 
 import time
 import logging
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any, Callable
+from dataclasses import dataclass, field, replace
 
 from ..locator.ocr_locator import OCRLocator
 from ..locator.feature_locator import FeatureLocator
@@ -64,6 +64,17 @@ class PublishTask:
     """发布任务"""
     text: str
     images: List[str] = field(default_factory=list)
+    confirm_publish: bool = False
+    before_final_click: Optional[Callable[[], None]] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    after_final_click: Optional[Callable[[], None]] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass
@@ -74,6 +85,9 @@ class PublishResult:
     elapsed_seconds: float
     error_message: str = ""
     step_times: Dict[str, float] = field(default_factory=dict)
+    published: bool = False
+    stopped_before_publish: bool = False
+    final_click_intent: bool = False
 
 
 class EventDrivenPublisher:
@@ -188,6 +202,7 @@ class EventDrivenPublisher:
             logger.info(f"当前微信版本: {current_ver.raw}")
 
         version_changed = self.version_detector.is_version_changed()
+        is_desktop_v4 = bool(current_ver and current_ver.major >= 4)
         if version_changed:
             logger.info("微信版本已变化，将触发自动重建")
             self.notifier.info(
@@ -195,10 +210,16 @@ class EventDrivenPublisher:
                 f"检测到微信版本变化: {current_ver.raw if current_ver else 'unknown'}"
             )
 
-        # 0.5 确保模板库非空（首次运行自动生成）
-        template_count = self.version_detector.ensure_templates(self.ocr)
-        if template_count > 0:
-            logger.info(f"图标模板就绪: {template_count} 个")
+        # Template extraction performs many full-screen OCR passes. Desktop
+        # 4.x uses the validated window-relative camera path instead.
+        if self.version_detector.templates_exist():
+            logger.info("图标模板库就绪")
+        elif not is_desktop_v4:
+            template_count = self.version_detector.ensure_templates(self.ocr)
+            if template_count > 0:
+                logger.info(f"图标模板就绪: {template_count} 个")
+        else:
+            logger.info("微信 4.x 跳过旧版图标模板自动生成")
 
         # 1. 窗口
         if not self.operator.find_wechat_window():
@@ -212,12 +233,18 @@ class EventDrivenPublisher:
             logger.error(f"未登录: {login_state['details']}")
             return False
 
-        # 3. 校准（如果版本变化则强制重建）
-        mapping = self.calibrator.calibrate(force=version_changed)
+        # Desktop 4.x uses a separate window and window-relative positioning;
+        # legacy navigation calibration is both slow and inapplicable there.
+        if is_desktop_v4:
+            logger.info("微信 4.x 跳过旧版导航校准")
+        else:
+            self.calibrator.calibrate(force=version_changed)
 
         # 3.5 版本变化时重建模板 + 标记新版本
-        if version_changed:
+        if version_changed and not is_desktop_v4:
             self.version_detector.trigger_rebuild(self.calibrator, self.ocr)
+            self.version_detector.mark_current_version()
+        elif version_changed:
             self.version_detector.mark_current_version()
 
         # 4. 启动所有 Watcher（事件源）
@@ -235,10 +262,15 @@ class EventDrivenPublisher:
             watch_uia_names=[
                 '朋友圈', '发表', '聊天', '通讯录',
             ],
+            ocr_region_provider=self.operator.active_window_region,
+            enable_ocr=not is_desktop_v4,
         )
 
         # 5. 风控检查
-        self.risk_detector.check(force=True)
+        self.risk_detector.check(
+            force=True,
+            region=self._active_alert_region(),
+        )
 
         logger.info("初始化完成，事件驱动系统就绪")
         return True
@@ -253,14 +285,15 @@ class EventDrivenPublisher:
         step_times = {}
 
         # 前置检查
-        if not self._pre_check():
+        if not self._pre_check(will_publish=task.confirm_publish):
             return PublishResult(False, task, time.time() - start_time, "前置检查失败")
 
         self.bus.emit(Event(EventType.STEP_STARTED, "publisher", {"step": "publish"}))
 
         # ── 步骤 1：进入朋友圈 ──
         t0 = time.time()
-        if not self._step_enter_moments():
+        self._prepared_image_count = 0
+        if not self._step_enter_moments(task.images):
             return PublishResult(False, task, time.time() - start_time, "进入朋友圈失败")
         step_times['enter_moments'] = time.time() - t0
 
@@ -273,19 +306,70 @@ class EventDrivenPublisher:
 
         # ── 步骤 3：添加图片 ──
         t0 = time.time()
-        if task.images:
-            if not self._step_add_images(task.images):
+        remaining_images = task.images[self._prepared_image_count:]
+        if remaining_images:
+            if not self._step_add_images(remaining_images):
                 return PublishResult(False, task, time.time() - start_time, "添加图片失败")
         step_times['add_images'] = time.time() - t0
 
+        # 默认停在编辑页；调用方必须显式授权最终的“发表”点击。
+        if not task.confirm_publish:
+            elapsed = time.time() - start_time
+            result = PublishResult(
+                True,
+                task,
+                elapsed,
+                step_times=step_times,
+                stopped_before_publish=True,
+            )
+            self._stats.append(result)
+            self.bus.emit(Event(
+                EventType.STEP_COMPLETED,
+                "publisher",
+                {"elapsed": elapsed, "stopped_before_publish": True},
+            ))
+            logger.warning("安全模式：内容已准备，未点击发表")
+            return result
+
         # ── 步骤 4：发布 ──
         t0 = time.time()
-        if not self._step_publish():
-            return PublishResult(False, task, time.time() - start_time, "发布失败")
+        if task.before_final_click is not None:
+            try:
+                task.before_final_click()
+            except Exception as error:
+                logger.exception("最终点击意图持久化失败，停止发布")
+                return PublishResult(
+                    False,
+                    task,
+                    time.time() - start_time,
+                    f"最终点击意图持久化失败: {error}",
+                    step_times=step_times,
+                )
+        publish_confirmed = (
+            self._step_publish(task.text, after_click=task.after_final_click)
+            if task.after_final_click is not None
+            else self._step_publish(task.text)
+        )
+        if not publish_confirmed:
+            return PublishResult(
+                False,
+                task,
+                time.time() - start_time,
+                "发布结果无法确认",
+                step_times=step_times,
+                final_click_intent=True,
+            )
         step_times['publish'] = time.time() - t0
 
         elapsed = time.time() - start_time
-        result = PublishResult(True, task, elapsed, step_times=step_times)
+        result = PublishResult(
+            True,
+            task,
+            elapsed,
+            step_times=step_times,
+            published=True,
+            final_click_intent=True,
+        )
         self._stats.append(result)
 
         self.bus.emit(Event(EventType.STEP_COMPLETED, "publisher",
@@ -318,7 +402,8 @@ class EventDrivenPublisher:
     # 步骤实现 —— 每一步都等事件，不等时间
     # ══════════════════════════════════════════════════════════
 
-    def _step_enter_moments(self, max_retries: int = 3) -> bool:
+    def _step_enter_moments(self, image_paths: list = None,
+                            max_retries: int = 3) -> bool:
         """
         进入朋友圈。
         点击导航栏"朋友圈" → 等待"这一刻的想法"文字出现。
@@ -326,7 +411,15 @@ class EventDrivenPublisher:
         旧版：click + time.sleep(1.5) + OCR扫描确认
         新版：click + wait_for(text.appeared("这一刻的想法"))
         """
+        image_paths = image_paths or []
+
+        # WeChat 4.x opens Moments in a separate Qt window. Its camera button
+        # opens the file picker before the compose controls become available.
+        if self.operator.activate_moments_window():
+            return self._prepare_desktop_editor(image_paths)
+
         for attempt in range(1, max_retries + 1):
+            self.operator.activate_main_window()
             # 点击
             self.operator.click_by_uia(name="朋友圈")
             if not self.operator.click_element(MOMENTS_ELEMENTS['nav_moments']):
@@ -339,6 +432,9 @@ class EventDrivenPublisher:
                 timeout=5.0,
             )
 
+            if self.operator.activate_moments_window():
+                return self._prepare_desktop_editor(image_paths)
+
             if event is not None:
                 logger.info(f"朋友圈页面已加载 (尝试 {attempt})")
                 return True
@@ -349,13 +445,48 @@ class EventDrivenPublisher:
 
         return False
 
+    def _prepare_desktop_editor(self, image_paths: list,
+                                timeout: float = 12.0) -> bool:
+        """Open the desktop 4.x editor, selecting its required first image."""
+        region = self.operator.active_window_region()
+        self.ocr._invalidate_cache()
+        if self.ocr.find_best('这一刻的想法', region=region):
+            return True
+
+        if not image_paths:
+            logger.error("微信 Windows 4.x 当前流程需要至少一张图片才能打开编辑页")
+            return False
+        if not self.operator.click_moments_camera():
+            return False
+        if not self.file_dialog.select_file_via_pywinauto(image_paths[0], timeout=timeout):
+            return False
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.operator.activate_moments_window()
+            region = self.operator.active_window_region()
+            self.ocr._invalidate_cache()
+            if self.ocr.find_best('这一刻的想法', region=region):
+                self._prepared_image_count = 1
+                logger.info("朋友圈编辑页已打开，首张图片已添加")
+                return True
+            time.sleep(0.5)
+
+        logger.error("选择图片后未检测到朋友圈编辑页")
+        return False
+
     def _step_type_text(self, text: str) -> bool:
         """
         输入文字。
         点击输入框 → 输入 → 等一个小定时器确认。
         """
         # 点击输入框
-        self.operator.click_element(MOMENTS_ELEMENTS['input_hint'])
+        input_element = replace(
+            MOMENTS_ELEMENTS['input_hint'],
+            ocr_region=self.operator.active_window_region(),
+        )
+        if not self.operator.click_element(input_element):
+            return False
         self.sim.micro_pause(mean=0.2)
 
         # 清空旧内容 + 输入
@@ -378,7 +509,9 @@ class EventDrivenPublisher:
         for i, img_path in enumerate(image_paths):
             for attempt in range(1, max_retries + 1):
                 # 粘贴图片
-                self.file_dialog.paste_image_from_file(img_path)
+                if not self.file_dialog.paste_image_from_file(img_path):
+                    logger.warning(f"图片 {i+1} 粘贴失败 (尝试 {attempt})")
+                    continue
 
                 # 等待上传完成事件 OR 超时
                 # 先等一个小延迟（给微信一点时间反应）
@@ -386,7 +519,9 @@ class EventDrivenPublisher:
                 self.bus.wait_for(EventType.TIMER_EXPIRED, timeout=3.0)
 
                 # 检查上传状态
-                blocks = self.ocr.scan_screen()
+                blocks = self.ocr.scan_screen(
+                    region=self.operator.active_window_region()
+                )
                 texts = [b.text for b in blocks]
 
                 if any('上传失败' in t for t in texts):
@@ -399,7 +534,9 @@ class EventDrivenPublisher:
 
         return True
 
-    def _step_publish(self, max_retries: int = 3) -> bool:
+    def _step_publish(self, expected_text: str = "",
+                      max_retries: int = 1,
+                      after_click: Optional[Callable[[], None]] = None) -> bool:
         """
         点击发表 → 等待"已发送"事件确认。
         """
@@ -408,31 +545,58 @@ class EventDrivenPublisher:
             self.sim.micro_pause(mean=1.0)
 
             # 点击发表
-            self.operator.click_element(MOMENTS_ELEMENTS['btn_publish'])
-
-            # 等待发布确认事件
-            # "已发送" 出现 → 发布成功
-            # "发送失败" 出现 → 发布失败
-            event = self.bus.wait_any(
-                [
-                    EventType.TEXT_APPEARED,   # "已发送" 或 "发送失败"
-                    EventType.TIMER_EXPIRED,    # 超时
-                ],
-                timeout=15.0,
+            publish_element = replace(
+                MOMENTS_ELEMENTS['btn_publish'],
+                ocr_region=self.operator.active_window_region(),
             )
-
-            if event is None:
-                logger.warning(f"发布确认超时 (尝试 {attempt})")
+            if not self.operator.click_element(publish_element):
                 continue
 
-            if event.type == EventType.TEXT_APPEARED:
-                text = event.payload.get('matched', '')
-                if text == '已发送':
+            if after_click is not None:
+                try:
+                    after_click()
+                except Exception:
+                    # The click has already happened. Continue confirmation and
+                    # let the caller's durable outbox retry reporting later.
+                    logger.exception("最终点击后的状态记录失败，继续确认发布结果")
+
+            # WeChat 4.x does not expose a usable UIA event. Verify that the
+            # editor disappears, but never click twice when status is unclear.
+            deadline = time.time() + 15.0
+            editor_gone_scans = 0
+            expected_probe = expected_text.strip()[:8]
+            while time.time() < deadline:
+                self.operator.activate_moments_window()
+                region = self.operator.active_window_region()
+                self.ocr._invalidate_cache()
+                blocks = self.ocr.scan_screen(region=region)
+                texts = [block.text for block in blocks]
+
+                if any('发送失败' in text or '发表失败' in text for text in texts):
+                    logger.error("微信报告发布失败")
+                    break
+                if any('已发送' in text for text in texts):
                     logger.info("发布已确认")
                     return True
-                elif '失败' in text:
-                    logger.error(f"发布失败: {text}")
-                    continue
+                if expected_probe and any(expected_probe in text for text in texts):
+                    logger.info("已在朋友圈列表识别到新发布文案")
+                    return True
+
+                editor_visible = any(
+                    marker in text
+                    for text in texts
+                    for marker in ('发表', '取消', '谁可以看', '提醒谁看')
+                )
+                if not editor_visible and len(blocks) >= 3:
+                    editor_gone_scans += 1
+                    if editor_gone_scans >= 2:
+                        logger.info("朋友圈编辑页已关闭，发布完成")
+                        return True
+                else:
+                    editor_gone_scans = 0
+                time.sleep(0.5)
+
+            logger.warning(f"发布结果无法确认 (尝试 {attempt}/{max_retries})")
 
         return False
 
@@ -471,19 +635,34 @@ class EventDrivenPublisher:
     # 辅助
     # ══════════════════════════════════════════════════════════
 
-    def _pre_check(self) -> bool:
+    def _pre_check(self, will_publish: bool = False) -> bool:
         """发布前的快速检查"""
         login_state = self.operator.check_login_state()
         if not login_state['logged_in']:
             logger.critical(f"掉线: {login_state['details']}")
             return False
-        if not self.risk_detector.record_operation('posts'):
+        if will_publish and not self.risk_detector.record_operation('posts'):
             return False
         if not self.risk_detector.wait_if_needed():
             return False
         self.operator.ensure_window_active()
-        self.popup_handler.clear_blocking_popups()
+        self.popup_handler.clear_blocking_popups(
+            region=self._active_alert_region()
+        )
         return True
+
+    def _active_alert_region(self):
+        """Return the central area where WeChat displays modal warnings."""
+        region = self.operator.active_window_region()
+        if not region:
+            return None
+        left, top, width, height = region
+        return (
+            left + width // 5,
+            top + height // 5,
+            width * 3 // 5,
+            height * 3 // 5,
+        )
 
     def _task_interval(self):
         """任务间的事件驱动延迟"""

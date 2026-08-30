@@ -1,0 +1,25 @@
+{
+  "specVersion": "wechat-moments-publisher/event-v1",
+  "eventId": "evt-98cbf279",
+  "taskId": "task-b87c276b",
+  "idempotencyKey": "publish-20260830-000001",
+  "leaseToken": "lease-token-at-least-sixteen-characters",
+  "agentId": "agent-0a871b68",
+  "instanceId": "instance-8b33f74f",
+  "type": "succeeded",
+  "attempt": 1,
+  "occurredAt": "2026-08-30T08:01:23Z",
+  "details": {
+    "stage": "confirmation",
+    "message": "已在朋友圈信息流识别到预期文本"
+  },
+  "result": {
+    "confirmation": {
+      "mode": "feed_text_ocr",
+      "state": "confirmed",
+      "matchedTextHash": "fe15c0d3ebe314fa8b70660746bbf1a92f1a8318e271d951eb57cd11e9df82dc"
+    },
+    "error": null,
+    "evidence": []
+  }
+}

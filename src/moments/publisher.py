@@ -49,6 +49,7 @@ class PublishTask:
     location: str = ""               # 所在地（"所在位置"功能）
     privacy: str = "公开"            # 隐私设置
     remind_users: List[str] = field(default_factory=list)  # @提醒的用户
+    confirm_publish: bool = False      # 必须显式授权最终点击
 
 
 @dataclass
@@ -60,6 +61,8 @@ class PublishResult:
     elapsed_seconds: float           # 耗时
     error_message: str = ""          # 失败原因
     step_times: Dict[str, float] = field(default_factory=dict)
+    published: bool = False
+    stopped_before_publish: bool = False
 
 
 class MomentsPublisher:
@@ -234,10 +237,14 @@ class MomentsPublisher:
 
             try:
                 result = self._execute_publish(task, attempt)
-                if result.success:
+                if result.success and result.published:
                     self._daily_post_count += 1
                     self._stats.append(result)
                     logger.info(f"✅ 发布成功 (耗时 {result.elapsed_seconds:.0f}s)")
+                    return result
+                if result.stopped_before_publish:
+                    self._stats.append(result)
+                    logger.warning("安全模式：内容已准备，未点击发表")
                     return result
 
             except Exception as e:
@@ -311,6 +318,7 @@ class MomentsPublisher:
         context = WorkflowContext(
             text=task.text,
             images=task.images,
+            confirm_publish=task.confirm_publish,
         )
 
         # 构建状态机
@@ -361,11 +369,19 @@ class MomentsPublisher:
 
         elapsed = time.time() - start_time
 
+        if sm.is_ready_for_review():
+            return PublishResult(
+                success=True, task=task, attempts=attempt,
+                elapsed_seconds=elapsed,
+                step_times=context.step_times,
+                stopped_before_publish=True,
+            )
         if sm.is_success():
             return PublishResult(
                 success=True, task=task, attempts=attempt,
                 elapsed_seconds=elapsed,
                 step_times=context.step_times,
+                published=True,
             )
         else:
             return PublishResult(

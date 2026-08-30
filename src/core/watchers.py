@@ -88,11 +88,13 @@ class OCRTextWatcher(BaseWatcher):
 
     def __init__(self, bus: EventBus, ocr_locator,
                  watch_texts: List[str] = None,
-                 interval: float = 1.0):
+                 interval: float = 1.0,
+                 region_provider: Callable = None):
         super().__init__(bus, "OCRTextWatcher", interval)
         self._ocr = ocr_locator
         self._watch_texts = set(watch_texts or [])
         self._last_texts: Set[str] = set()
+        self._region_provider = region_provider
 
     def watch_for(self, texts: List[str]):
         """添加要监测的文字"""
@@ -106,7 +108,8 @@ class OCRTextWatcher(BaseWatcher):
         while self._running:
             try:
                 # OCR 扫描
-                blocks = self._ocr.scan_screen()
+                region = self._region_provider() if self._region_provider else None
+                blocks = self._ocr.scan_screen(region=region)
                 current_texts = {b.text.strip() for b in blocks}
 
                 # Diff: 新出现的
@@ -370,15 +373,18 @@ class WatchManager:
 
     def start_all(self,
                   watch_ocr_texts: List[str] = None,
-                  watch_uia_names: List[str] = None):
+                  watch_uia_names: List[str] = None,
+                  ocr_region_provider: Callable = None,
+                  enable_ocr: bool = True):
         """启动所有 Watcher"""
 
         # OCR Watcher
-        if self.ocr_locator:
+        if self.ocr_locator and enable_ocr:
             self.ocr_watcher = OCRTextWatcher(
                 self.bus, self.ocr_locator,
                 watch_texts=watch_ocr_texts or [],
                 interval=1.0,
+                region_provider=ocr_region_provider,
             )
             self.ocr_watcher.start()
 

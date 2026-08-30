@@ -117,7 +117,7 @@ class PopupHandler:
 
     # ── 公共接口 ──
 
-    def clear_blocking_popups(self) -> List[str]:
+    def clear_blocking_popups(self, region=None) -> List[str]:
         """
         清理所有阻断性弹窗。
         应该在每步操作前调用。
@@ -127,16 +127,13 @@ class PopupHandler:
         """
         handled = []
 
-        # 强制刷新 OCR 缓存
-        self._ocr._invalidate_cache()
-
         for popup in self._popups:
             if popup.priority != PopupPriority.BLOCKING:
                 continue
 
-            if self._detect_popup(popup):
+            if self._detect_popup(popup, region=region):
                 logger.warning(f"🚫 检测到阻断弹窗: {popup.name}")
-                if self._dismiss_popup(popup):
+                if self._dismiss_popup(popup, region=region):
                     handled.append(popup.name)
                     self._history.append({
                         'time': time.time(),
@@ -176,16 +173,16 @@ class PopupHandler:
 
     # ── 内部方法 ──
 
-    def _detect_popup(self, popup: PopupDescriptor) -> bool:
+    def _detect_popup(self, popup: PopupDescriptor, region=None) -> bool:
         """检测弹窗是否存在"""
         for signature in popup.ocr_signatures:
-            best = self._ocr.find_best(signature)
+            best = self._ocr.find_best(signature, region=region)
             if best:
                 logger.debug(f"检测到弹窗特征 '{signature}' → {popup.name}")
                 return True
         return False
 
-    def _dismiss_popup(self, popup: PopupDescriptor) -> bool:
+    def _dismiss_popup(self, popup: PopupDescriptor, region=None) -> bool:
         """关闭弹窗"""
         if popup.dismiss_action == "stop":
             # 无法自动关闭，需要人工介入
@@ -200,7 +197,7 @@ class PopupHandler:
         if popup.dismiss_action == "click_text":
             if popup.dismiss_target:
                 # 用 OCR 找到关闭按钮文字并点击
-                best = self._ocr.find_best(popup.dismiss_target)
+                best = self._ocr.find_best(popup.dismiss_target, region=region)
                 if best:
                     pyautogui.click(best.x, best.y)
                     time.sleep(0.5)

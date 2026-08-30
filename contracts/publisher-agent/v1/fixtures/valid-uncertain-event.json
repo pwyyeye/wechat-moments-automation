@@ -1,0 +1,29 @@
+{
+  "specVersion": "wechat-moments-publisher/event-v1",
+  "eventId": "evt-uncertain-01",
+  "taskId": "task-b87c276b",
+  "idempotencyKey": "publish-20260830-000001",
+  "leaseToken": "lease-token-at-least-sixteen-characters",
+  "agentId": "agent-0a871b68",
+  "instanceId": "instance-8b33f74f",
+  "type": "uncertain",
+  "attempt": 1,
+  "occurredAt": "2026-08-30T08:01:33Z",
+  "details": {
+    "stage": "confirmation",
+    "message": "已经进入最终点击区间，但无法确认发布结果"
+  },
+  "result": {
+    "confirmation": {
+      "mode": "feed_text_ocr",
+      "state": "unconfirmed"
+    },
+    "error": {
+      "code": "POST_CLICK_UNCONFIRMED",
+      "stage": "confirmation",
+      "retryable": false,
+      "message": "朋友圈信息流未在确认时限内出现预期文本"
+    },
+    "evidence": []
+  }
+}

@@ -90,15 +90,12 @@ class WeChatWindowFinder:
 
     @staticmethod
     def _is_wechat_window(hwnd) -> bool:
-        """判断窗口是否为微信窗口"""
+        """判断窗口是否为微信主窗口，排除朋友圈等辅助窗口。"""
         cls = win32gui.GetClassName(hwnd)
-        for pattern in WeChatWindowFinder.WECHAT_CLASS_PATTERNS:
-            if pattern in cls or cls == pattern:
-                return True
-        # Qt 窗口标题为"微信"的也接受
-        if cls.startswith('Qt') and win32gui.GetWindowText(hwnd) == '微信':
+        title = win32gui.GetWindowText(hwnd)
+        if cls == 'WeChatMainWndForPC':
             return True
-        return False
+        return cls.startswith('Qt') and title == '微信'
 
     @staticmethod
     def enum_all() -> List[Tuple[int, str]]:

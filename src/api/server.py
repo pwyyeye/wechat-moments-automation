@@ -45,6 +45,10 @@ class PublishRequest(BaseModel):
     text: str = Field(..., description="朋友圈文字内容", max_length=2000)
     images: List[str] = Field(default_factory=list, description="图片路径列表")
     schedule_at: Optional[str] = Field(None, description="定时发布时间 ISO 8601")
+    confirm_publish: bool = Field(
+        False,
+        description="必须显式设为 true 才允许点击发表；默认停在编辑页",
+    )
 
 class PublishResponse(BaseModel):
     success: bool
@@ -52,6 +56,8 @@ class PublishResponse(BaseModel):
     elapsed_seconds: float = 0
     step_times: Dict[str, float] = Field(default_factory=dict)
     error: str = ""
+    published: bool = False
+    stopped_before_publish: bool = False
 
 class StatusResponse(BaseModel):
     status: str  # "running" | "idle" | "error"
@@ -67,6 +73,7 @@ class ScheduleRequest(BaseModel):
     images: List[str] = Field(default_factory=list)
     cron: str = Field(..., description="cron 表达式，如 '0 9 * * *'")
     enabled: bool = True
+    confirm_publish: bool = False
 
 class ScheduleItem(BaseModel):
     id: str
@@ -76,6 +83,7 @@ class ScheduleItem(BaseModel):
     enabled: bool
     created_at: str
     next_run: Optional[str] = None
+    confirm_publish: bool = False
 
 class HistoryItem(BaseModel):
     task_id: str
@@ -84,6 +92,7 @@ class HistoryItem(BaseModel):
     elapsed_seconds: float
     timestamp: str
     error: str = ""
+    published: bool = False
 
 # ═══════════════════════════════════════════════════════════════
 # 全局状态
@@ -206,7 +215,11 @@ async def api_publish(req: PublishRequest):
 
     from src.core.publisher import PublishTask
 
-    task = PublishTask(text=req.text, images=req.images)
+    task = PublishTask(
+        text=req.text,
+        images=req.images,
+        confirm_publish=req.confirm_publish,
+    )
     result = state.publisher.publish(task)
 
     # 记录历史
@@ -217,6 +230,7 @@ async def api_publish(req: PublishRequest):
         elapsed_seconds=result.elapsed_seconds,
         timestamp=datetime.now().isoformat(),
         error=result.error_message,
+        published=result.published,
     )
     state.history.insert(0, history_item)
     if len(state.history) > 500:
@@ -228,6 +242,8 @@ async def api_publish(req: PublishRequest):
         elapsed_seconds=result.elapsed_seconds,
         step_times=result.step_times,
         error=result.error_message,
+        published=result.published,
+        stopped_before_publish=result.stopped_before_publish,
     )
 
 
@@ -291,6 +307,7 @@ async def api_create_schedule(req: ScheduleRequest):
         enabled=req.enabled,
         created_at=datetime.now().isoformat(),
         next_run=next_run,
+        confirm_publish=req.confirm_publish,
     )
     state.schedules[schedule_id] = item
 
@@ -418,12 +435,19 @@ async def api_account_publish(name: str, req: PublishRequest):
         raise HTTPException(503, "Publisher 未初始化")
     # TODO: 集成 AccountManager 的多账号发布
     # 当前回退到默认 publisher
-    task_data = type('obj', (), {'text': req.text, 'images': req.images})()
-    result = state.publisher.publish(task_data)
+    from src.core.publisher import PublishTask
+    task = PublishTask(
+        text=req.text,
+        images=req.images,
+        confirm_publish=req.confirm_publish,
+    )
+    result = state.publisher.publish(task)
     return PublishResponse(
         success=result.success,
         elapsed_seconds=getattr(result, 'elapsed_seconds', 0),
         error=getattr(result, 'error_message', ''),
+        published=getattr(result, 'published', False),
+        stopped_before_publish=getattr(result, 'stopped_before_publish', False),
     )
 
 

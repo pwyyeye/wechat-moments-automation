@@ -10,6 +10,7 @@ Pillow>=10.0.0                # 图像处理
 
 # ── OCR 引擎（二选一或都装） ──
 paddleocr>=2.7.0              # PaddleOCR（推荐，中文最优）
+paddlepaddle                   # PaddleOCR 运行时
 # easyocr>=1.7.0               # EasyOCR（备选）
 
 # ── Windows API ──
@@ -33,6 +34,7 @@ fastapi>=0.115.0               # REST API 框架
 uvicorn>=0.30.0                # ASGI 服务器
 pydantic>=2.0.0                # 数据验证
 croniter>=2.0.0                # Cron 表达式解析（定时任务）
+httpx>=0.27.0                  # 多数据源 Agent HTTP 客户端
 
 # ── 可选 ──
 # onnxruntime>=1.15.0          # PaddleOCR ONNX 加速（需 GPU 则装 onnxruntime-gpu）

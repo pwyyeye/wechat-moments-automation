@@ -106,12 +106,13 @@ class AnchorCalibrator:
         logger.info("开始自动校准...")
 
         mapping = CoordinateMapping(
-            version_id=self._generate_version_id(),
+            version_id="pending",
             calibrated_at=time.time(),
         )
 
         # 第 1 步：获取窗口信息
         self._calibrate_window(mapping)
+        mapping.version_id = self._generate_version_id(mapping.window_rect)
 
         # 第 2 步：OCR 扫描导航栏
         self._calibrate_navigation(mapping)
@@ -161,8 +162,11 @@ class AnchorCalibrator:
     def _calibrate_window(self, mapping: CoordinateMapping):
         """获取微信窗口尺寸"""
         import win32gui
-        hwnd = win32gui.FindWindow("WeChatMainWndForPC", None)
-        if hwnd:
+        from ..executor.wechat_discovery import _find_wechat_windows
+
+        windows = _find_wechat_windows()
+        if windows:
+            hwnd = windows[0][0]
             rect = win32gui.GetWindowRect(hwnd)
             mapping.window_rect = rect
             # 添加窗口锚点
@@ -190,9 +194,11 @@ class AnchorCalibrator:
     def _calibrate_navigation(self, mapping: CoordinateMapping):
         """OCR 扫描微信导航栏，找到所有标签按钮"""
         nav_labels = ['聊天', '通讯录', '朋友圈', '视频号', '小程序', '我']
+        left, top, right, bottom = mapping.window_rect
+        region = (left, top, right - left, bottom - top)
 
         for label in nav_labels:
-            best = self.ocr.find_best(label)
+            best = self.ocr.find_best(label, region=region)
             if best:
                 anchor_name = f'nav_{label}'
                 mapping.anchors[anchor_name] = Anchor(
@@ -230,6 +236,21 @@ class AnchorCalibrator:
         注意：这会实际点击"朋友圈"按钮进入。
         如果你不希望校准时改变微信状态，可以将此步骤设为手动触发。
         """
+        # WeChat 4.x uses a separate Moments window whose editor only opens
+        # after image selection. Never click a possibly ambiguous OCR label.
+        import win32gui
+        moments_windows = []
+        win32gui.EnumWindows(
+            lambda hwnd, found: found.append(hwnd)
+            if win32gui.IsWindowVisible(hwnd)
+            and win32gui.GetWindowText(hwnd) == '朋友圈'
+            else None,
+            moments_windows,
+        )
+        if moments_windows:
+            logger.debug("检测到独立朋友圈窗口，跳过旧版页面点击校准")
+            return
+
         # 只在有导航锚点时才进入
         if 'nav_朋友圈' not in mapping.anchors:
             logger.debug("无朋友圈导航锚点，跳过页面内锚点扫描")
@@ -258,12 +279,16 @@ class AnchorCalibrator:
                 )
                 logger.debug(f"  朋友圈锚点: {anchor_name} → ({best.x}, {best.y})")
 
-    def _generate_version_id(self) -> str:
+    def _generate_version_id(self, window_rect=None) -> str:
         """生成当前版本的唯一标识"""
         try:
             import hashlib
             # 用 OCR 扫描结果的部分文字做指纹
-            blocks = self.ocr.scan_screen()
+            region = None
+            if window_rect:
+                left, top, right, bottom = window_rect
+                region = (left, top, right - left, bottom - top)
+            blocks = self.ocr.scan_screen(region=region)
             texts = sorted([b.text for b in blocks[:10]])
             fingerprint = '|'.join(texts)
             hash_id = hashlib.md5(fingerprint.encode()).hexdigest()[:8]

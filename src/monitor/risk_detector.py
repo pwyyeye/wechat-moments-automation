@@ -18,11 +18,11 @@
 Author: 版本无关微信自动化系统
 """
 
-import time
 import logging
-from enum import Enum
-from typing import Optional, List, Dict
+import time
 from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ class RiskDetector:
 
     # ── 公共接口 ──
 
-    def check(self, force: bool = False) -> RiskLevel:
+    def check(self, force: bool = False, region=None) -> RiskLevel:
         """
         检查是否有风控信号。
 
@@ -162,15 +162,18 @@ class RiskDetector:
 
         self._last_check_time = now
 
-        # 快速 OCR 扫描（只扫关键区域，不扫全屏）
-        # 这里可以优化为只扫描屏幕中下部（微信弹窗通常出现在那里）
-        screen_h = 1080  # 假设
-        alert_region = (0, screen_h // 3, 1920, screen_h * 2 // 3)
+        if region is not None:
+            self._ocr._invalidate_cache()
+            blocks = self._ocr.scan_screen(region=region)
+
+            def detected(signal):
+                return any(signal.ocr_text in block.text for block in blocks)
+        else:
+            def detected(signal):
+                return bool(self._ocr.find_text(signal.ocr_text))
 
         for signal in self._signals:
-            # 检查信号文字是否出现在屏幕上
-            best = self._ocr.find_text(signal.ocr_text)
-            if best:
+            if detected(signal):
                 self._on_signal_detected(signal)
                 return signal.level
 
@@ -187,7 +190,7 @@ class RiskDetector:
         Returns:
             True 表示可以继续操作，False 表示应该停止
         """
-        if self.state.level >= RiskLevel.CRITICAL:
+        if self.state.level.value >= RiskLevel.CRITICAL.value:
             logger.critical("风险等级达到 CRITICAL，停止所有操作")
             return False
 

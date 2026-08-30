@@ -197,7 +197,8 @@ class HumanSimulator:
         if not text:
             return
 
-        if use_clipboard and len(text) > 20:
+        requires_unicode_paste = any(ord(char) > 127 for char in text)
+        if use_clipboard and (len(text) > 20 or requires_unicode_paste):
             self._paste_with_delay(text)
         else:
             self._type_character_by_character(text)

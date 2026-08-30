@@ -207,6 +207,13 @@ class TestRiskDetector:
         assert not detector.record_operation('posts')  # 3/3 达到上限，返回 False
         assert not detector.record_operation('posts')  # 4/3 超过上限
 
+    def test_safe_state_does_not_block_operations(self):
+        from src.monitor.risk_detector import RiskDetector
+
+        detector = RiskDetector(None)
+
+        assert detector.wait_if_needed()
+
 
 class TestProtoEncoder:
     """Protobuf 编码器测试"""

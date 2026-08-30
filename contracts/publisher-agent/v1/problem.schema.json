@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auto-content.local/contracts/publisher-agent/v1/problem.schema.json",
+  "title": "Publisher Agent Problem Details v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["type", "title", "status", "code", "detail", "retryable", "requestId"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "format": "uri"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "status": {
+      "type": "integer",
+      "minimum": 400,
+      "maximum": 599
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$",
+      "maxLength": 100
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  }
+}

@@ -20,6 +20,7 @@ import pyautogui
 import pyperclip
 import win32gui
 import win32con
+import win32process
 
 from ..locator.router import LocateRouter, ElementDescriptor, LocateResult
 from .human_sim import HumanSimulator
@@ -52,6 +53,8 @@ class Operator:
         self.sim = sim
         self._config = config or {}
         self._wechat_hwnd = None
+        self._moments_hwnd = None
+        self._active_hwnd = None
         self._uia = uia  # C# UIAutomation 桥接
         self._window_callbacks: list[Callable] = []
         self._last_window_rect: Optional[Tuple[int, int, int, int]] = None
@@ -66,46 +69,116 @@ class Operator:
         windows = _find_wechat_windows()
         if windows:
             self._wechat_hwnd = windows[0][0]
+            self._active_hwnd = self._wechat_hwnd
             logger.info(f"找到微信窗口: hwnd={self._wechat_hwnd}")
             return True
         logger.error("未找到微信窗口，请确认微信已启动")
         return False
+
+    def find_moments_window(self) -> bool:
+        """Find the separate Moments window used by desktop WeChat 4.x."""
+        main_pid = None
+        if self._wechat_hwnd and win32gui.IsWindow(self._wechat_hwnd):
+            _, main_pid = win32process.GetWindowThreadProcessId(self._wechat_hwnd)
+
+        candidates = []
+
+        def callback(hwnd, _):
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            if win32gui.GetWindowText(hwnd) != '朋友圈':
+                return
+            if main_pid:
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                if pid != main_pid:
+                    return
+            candidates.append(hwnd)
+
+        win32gui.EnumWindows(callback, None)
+        if not candidates:
+            return False
+
+        self._moments_hwnd = candidates[0]
         return True
 
-    def ensure_window_active(self) -> bool:
+    def ensure_window_active(self, hwnd: int = None) -> bool:
         """
         确保微信窗口在前台且未被最小化。
         这是所有自动化操作的前置条件。
         """
-        if not self._wechat_hwnd:
+        target = hwnd or self._active_hwnd or self._wechat_hwnd
+        if not target or not win32gui.IsWindow(target):
             if not self.find_wechat_window():
                 return False
+            target = self._wechat_hwnd
 
         # 检查是否最小化
-        if win32gui.IsIconic(self._wechat_hwnd):
-            win32gui.ShowWindow(self._wechat_hwnd, win32con.SW_RESTORE)
+        if win32gui.IsIconic(target):
+            win32gui.ShowWindow(target, win32con.SW_RESTORE)
             time.sleep(0.3)
             logger.debug("微信窗口已从最小化恢复")
 
         # 强制置顶（短暂置顶后取消，避免一直盖住其他窗口）
         win32gui.SetWindowPos(
-            self._wechat_hwnd, win32con.HWND_TOPMOST,
+            target, win32con.HWND_TOPMOST,
             0, 0, 0, 0,
             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,
         )
         time.sleep(0.1)
 
         # 激活窗口
-        win32gui.SetForegroundWindow(self._wechat_hwnd)
+        win32gui.SetForegroundWindow(target)
         time.sleep(0.15)
 
         # 取消置顶
         win32gui.SetWindowPos(
-            self._wechat_hwnd, win32con.HWND_NOTOPMOST,
+            target, win32con.HWND_NOTOPMOST,
             0, 0, 0, 0,
             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,
         )
 
+        self._active_hwnd = target
+        return True
+
+    def activate_main_window(self) -> bool:
+        """Activate the main WeChat window."""
+        if not self._wechat_hwnd and not self.find_wechat_window():
+            return False
+        return self.ensure_window_active(self._wechat_hwnd)
+
+    def activate_moments_window(self) -> bool:
+        """Activate the separate desktop Moments window when present."""
+        if not self._moments_hwnd or not win32gui.IsWindow(self._moments_hwnd):
+            if not self.find_moments_window():
+                return False
+        return self.ensure_window_active(self._moments_hwnd)
+
+    def active_window_region(self) -> Optional[Tuple[int, int, int, int]]:
+        """Return the active automation window as a PyAutoGUI region."""
+        hwnd = self._active_hwnd
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return None
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        return left, top, right - left, bottom - top
+
+    def click_moments_camera(self) -> bool:
+        """Click the camera icon in the desktop 4.x Moments header."""
+        if not self.activate_moments_window():
+            return False
+        region = self.active_window_region()
+        if not region:
+            return False
+
+        left, top, width, height = region
+        if width < 300 or height < 300:
+            logger.error(f"朋友圈窗口尺寸异常: {region}")
+            return False
+
+        # The header icons scale with the Qt window. This point is the center
+        # of the camera button and is deliberately far from the publish area.
+        x = left + int(width * 0.164)
+        y = top + int(height * 0.038)
+        self.sim.click_at(x, y)
         return True
 
     # ══════════════════════════════════════════════════════════
@@ -522,9 +595,23 @@ class Operator:
 
         # 回退 OCR
         try:
-            blocks = self.router.ocr.scan_screen()
+            if not self.activate_main_window():
+                return {
+                    'logged_in': False,
+                    'page': 'not_running',
+                    'details': '未找到微信主窗口',
+                }
+            region = self.active_window_region()
+            if region:
+                left, top, width, height = region
+                region = (left, top, min(width, 700), min(height, 400))
+            blocks = self.router.ocr.scan_screen(region=region)
             texts = [b.text for b in blocks]
-            has_nav = any(t in texts for t in ['聊天', '通讯录'])
+            has_nav = any(
+                marker in text
+                for text in texts
+                for marker in ('聊天', '通讯录', '搜索')
+            )
 
             return {
                 'logged_in': has_nav,

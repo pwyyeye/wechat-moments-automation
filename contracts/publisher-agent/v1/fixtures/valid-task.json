@@ -1,0 +1,40 @@
+{
+  "specVersion": "wechat-moments-publisher/task-v1",
+  "taskId": "task-b87c276b",
+  "idempotencyKey": "publish-20260830-000001",
+  "revision": 1,
+  "createdAt": "2026-08-30T07:30:00Z",
+  "priority": 50,
+  "schedule": {
+    "notBefore": "2026-08-30T08:00:00Z",
+    "expiresAt": null,
+    "timezone": "Asia/Shanghai",
+    "misfirePolicy": "manual"
+  },
+  "target": {
+    "platform": "wechat_moments",
+    "accountKey": "wechat-main",
+    "visibility": {
+      "type": "public"
+    }
+  },
+  "content": {
+    "text": "这是标准合同测试文案。",
+    "media": [
+      {
+        "mediaId": "media-e9329bb1",
+        "type": "image",
+        "mimeType": "image/jpeg",
+        "fileName": "cover.jpg",
+        "sizeBytes": 1837264,
+        "sha256": "a9f2f08f45c2b6c134fa21d1c0a70f30a5d2c6e55d00b3613cf39eed7918c287",
+        "downloadUrl": "https://files.example.com/signed/temporary-url"
+      }
+    ]
+  },
+  "policy": {
+    "maxPreClickAttempts": 2,
+    "requirePostPublishConfirmation": true
+  },
+  "extensions": {}
+}

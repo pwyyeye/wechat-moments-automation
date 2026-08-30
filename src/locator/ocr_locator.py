@@ -46,6 +46,7 @@ class OCRResult:
     blocks: List[TextBlock]
     timestamp: float
     screen_size: Tuple[int, int]
+    region: Optional[Tuple[int, int, int, int]] = None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -58,6 +59,7 @@ class PaddleOCREngine:
     def __init__(self, config: dict = None):
         self._ocr = None
         self._config = config or {}
+        self._api_version = 0
 
     @property
     def ocr(self):
@@ -65,10 +67,23 @@ class PaddleOCREngine:
         if self._ocr is None:
             try:
                 from paddleocr import PaddleOCR
-                self._ocr = PaddleOCR(
-                    lang=self._config.get('lang', 'ch'),
-                    use_angle_cls=self._config.get('use_angle_cls', False),
-                )
+                try:
+                    self._ocr = PaddleOCR(
+                        lang=self._config.get('lang', 'ch'),
+                        use_doc_orientation_classify=self._config.get(
+                            'use_doc_orientation_classify', False
+                        ),
+                        use_doc_unwarping=self._config.get('use_doc_unwarping', False),
+                        use_textline_orientation=self._config.get('use_angle_cls', False),
+                        enable_mkldnn=self._config.get('enable_mkldnn', False),
+                    )
+                    self._api_version = 3
+                except TypeError:
+                    self._ocr = PaddleOCR(
+                        lang=self._config.get('lang', 'ch'),
+                        use_angle_cls=self._config.get('use_angle_cls', False),
+                    )
+                    self._api_version = 2
                 logger.info("PaddleOCR 模型加载完成")
             except ImportError:
                 raise ImportError(
@@ -83,7 +98,10 @@ class PaddleOCREngine:
     def recognize(self, image: np.ndarray) -> List[TextBlock]:
         """识别图像中的所有文字"""
         try:
-            result = self.ocr.ocr(image, cls=False)
+            ocr = self.ocr
+            if self._api_version >= 3:
+                return self._parse_v3_results(ocr.predict(image))
+            result = ocr.ocr(image, cls=False)
         except Exception as e:
             logger.error(f"OCR 识别异常: {e}")
             return []
@@ -111,6 +129,37 @@ class PaddleOCREngine:
                 confidence=conf,
                 box=box,
             ))
+
+        return blocks
+
+    @staticmethod
+    def _parse_v3_results(results) -> List[TextBlock]:
+        """Convert PaddleOCR 3.x result objects to the project's stable model."""
+        blocks = []
+        for result in results or []:
+            payload = getattr(result, 'json', result)
+            if not isinstance(payload, dict):
+                continue
+            data = payload.get('res', payload)
+            texts = data.get('rec_texts', [])
+            scores = data.get('rec_scores', [])
+            polygons = data.get('rec_polys', data.get('dt_polys', []))
+
+            for text, score, polygon in zip(texts, scores, polygons):
+                points = [[float(x), float(y)] for x, y in polygon]
+                xs = [point[0] for point in points]
+                ys = [point[1] for point in points]
+                x1, x2 = min(xs), max(xs)
+                y1, y2 = min(ys), max(ys)
+                blocks.append(TextBlock(
+                    text=str(text),
+                    x=int((x1 + x2) / 2),
+                    y=int((y1 + y2) / 2),
+                    width=int(x2 - x1),
+                    height=int(y2 - y1),
+                    confidence=float(score),
+                    box=points,
+                ))
 
         return blocks
 
@@ -182,7 +231,7 @@ class OCRLocator:
             region: 搜索区域 (left, top, width, height)，None 为全屏
         """
         # 检查缓存
-        if self._is_cache_valid():
+        if self._is_cache_valid(region):
             return self._cache.blocks
 
         # 截屏
@@ -192,17 +241,31 @@ class OCRLocator:
         # OCR 识别
         blocks = self._engine.recognize(img_array)
 
+        # OCR engines return coordinates relative to the cropped image. Expose
+        # screen coordinates consistently so callers can click the result.
+        if region:
+            left, top, _, _ = region
+            for block in blocks:
+                block.x += left
+                block.y += top
+                block.box = [
+                    [point[0] + left, point[1] + top]
+                    for point in block.box
+                ]
+
         # 更新缓存
         self._cache = OCRResult(
             blocks=blocks,
             timestamp=time.time(),
             screen_size=pyautogui.size(),
+            region=region,
         )
 
         logger.debug(f"OCR 扫描完成: {len(blocks)} 个文本块")
         return blocks
 
-    def find_text(self, target: str, exact: bool = False) -> List[TextBlock]:
+    def find_text(self, target: str, exact: bool = False,
+                  region: Tuple[int, int, int, int] = None) -> List[TextBlock]:
         """
         查找包含指定文字的所有文本块。
 
@@ -213,7 +276,7 @@ class OCRLocator:
         Returns:
             匹配的文本块列表，按置信度从高到低排序
         """
-        blocks = self.scan_screen()
+        blocks = self.scan_screen(region=region)
         matches = []
 
         for block in blocks:
@@ -228,9 +291,10 @@ class OCRLocator:
         matches.sort(key=lambda b: b.confidence, reverse=True)
         return matches
 
-    def find_best(self, target: str) -> Optional[TextBlock]:
+    def find_best(self, target: str,
+                  region: Tuple[int, int, int, int] = None) -> Optional[TextBlock]:
         """查找最佳匹配（置信度最高）"""
-        matches = self.find_text(target)
+        matches = self.find_text(target, region=region)
         return matches[0] if matches else None
 
     def click_text(self, target: str) -> bool:
@@ -310,7 +374,8 @@ class OCRLocator:
 
     # ── 内部方法 ──
 
-    def _is_cache_valid(self) -> bool:
+    def _is_cache_valid(self,
+                        region: Tuple[int, int, int, int] = None) -> bool:
         """检查缓存是否有效"""
         if self._cache is None:
             return False
@@ -318,6 +383,8 @@ class OCRLocator:
             return False
         # 屏幕分辨率变化了
         if self._cache.screen_size != pyautogui.size():
+            return False
+        if self._cache.region != region:
             return False
         return True
 

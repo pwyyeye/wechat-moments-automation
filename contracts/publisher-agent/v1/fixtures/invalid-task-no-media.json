@@ -1,0 +1,30 @@
+{
+  "specVersion": "wechat-moments-publisher/task-v1",
+  "taskId": "task-invalid-no-media",
+  "idempotencyKey": "publish-invalid-no-media",
+  "revision": 1,
+  "createdAt": "2026-08-30T07:30:00Z",
+  "priority": 50,
+  "schedule": {
+    "notBefore": "2026-08-30T08:00:00Z",
+    "expiresAt": null,
+    "timezone": "Asia/Shanghai",
+    "misfirePolicy": "manual"
+  },
+  "target": {
+    "platform": "wechat_moments",
+    "accountKey": "wechat-main",
+    "visibility": {
+      "type": "public"
+    }
+  },
+  "content": {
+    "text": "当前 Windows 微信 4.x Profile 不接受无图片任务。",
+    "media": []
+  },
+  "policy": {
+    "maxPreClickAttempts": 2,
+    "requirePostPublishConfirmation": true
+  },
+  "extensions": {}
+}

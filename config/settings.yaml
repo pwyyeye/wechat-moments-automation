@@ -19,6 +19,9 @@ ocr:
   paddleocr:
     lang: "ch"
     use_angle_cls: false
+    use_doc_orientation_classify: false
+    use_doc_unwarping: false
+    enable_mkldnn: false       # PaddleOCR 3.x 在 Windows 上的兼容设置
     det_db_thresh: 0.3         # 检测阈值（越低越敏感，但可能误检）
     det_db_box_thresh: 0.5
     rec_batch_num: 6

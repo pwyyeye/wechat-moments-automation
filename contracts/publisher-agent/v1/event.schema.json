@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auto-content.local/contracts/publisher-agent/v1/event.schema.json",
+  "title": "WeChat Moments Publisher Event v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "specVersion",
+    "eventId",
+    "taskId",
+    "idempotencyKey",
+    "leaseToken",
+    "agentId",
+    "instanceId",
+    "type",
+    "attempt",
+    "occurredAt",
+    "details"
+  ],
+  "properties": {
+    "specVersion": {
+      "const": "wechat-moments-publisher/event-v1"
+    },
+    "eventId": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "taskId": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "idempotencyKey": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "leaseToken": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 512
+    },
+    "agentId": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "instanceId": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "type": {
+      "enum": [
+        "accepted",
+        "preflight_started",
+        "publish_started",
+        "final_click_intent",
+        "confirmation_started",
+        "succeeded",
+        "failed",
+        "uncertain"
+      ]
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "details": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["stage", "message"],
+      "properties": {
+        "stage": {
+          "enum": [
+            "claim",
+            "validation",
+            "download",
+            "preflight",
+            "editor",
+            "before_final_click",
+            "confirmation",
+            "report"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      }
+    },
+    "result": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/result"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": ["succeeded", "failed", "uncertain"]
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "result": {}
+        },
+        "required": ["result"]
+      }
+    }
+  ],
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["confirmation", "error", "evidence"],
+      "properties": {
+        "confirmation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["mode", "state"],
+              "properties": {
+                "mode": {
+                  "enum": ["feed_text_ocr"]
+                },
+                "state": {
+                  "enum": ["confirmed", "unconfirmed", "not_attempted"]
+                },
+                "matchedTextHash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            }
+          ]
+        },
+        "error": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["code", "stage", "retryable", "message"],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z0-9_]*$",
+                  "maxLength": 100
+                },
+                "stage": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "retryable": {
+                  "type": "boolean"
+                },
+                "message": {
+                  "type": "string",
+                  "maxLength": 1000
+                }
+              }
+            }
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["type", "sha256"],
+            "properties": {
+              "type": {
+                "enum": ["ocr_digest", "screenshot"]
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "storageRef": {
+                "type": "string",
+                "maxLength": 500
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

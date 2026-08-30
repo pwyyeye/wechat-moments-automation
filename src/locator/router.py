@@ -118,7 +118,10 @@ class LocateRouter:
                     time.sleep(0.5)
                     self.ocr._invalidate_cache()  # 强制刷新
 
-                best = self.ocr.find_best(element.ocr_text)
+                best = self.ocr.find_best(
+                    element.ocr_text,
+                    region=element.ocr_region,
+                )
                 if best:
                     elapsed = (time.time() - start_time) * 1000
                     logger.info(

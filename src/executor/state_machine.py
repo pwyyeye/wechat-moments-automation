@@ -38,6 +38,7 @@ class WorkflowState(Enum):
     ADDING_IMAGES = auto()          # 正在添加图片
     CONFIRMING_PUBLISH = auto()     # 正在确认发布
     VERIFYING_SUCCESS = auto()      # 正在验证发布结果
+    READY_FOR_REVIEW = auto()       # 已准备完成，安全停在发表前
     DONE = auto()                   # 完成
     WAITING = auto()                # 风控冷却等待中
     ERROR = auto()                  # 错误状态
@@ -56,6 +57,7 @@ class WorkflowContext:
     """工作流上下文 —— 携带整个流程的共享数据"""
     text: str = ""                  # 要发布的文字
     images: list = field(default_factory=list)  # 图片路径列表
+    confirm_publish: bool = True     # False 时在最终点击前停止
     start_time: float = 0.0         # 流程开始时间
     step_times: Dict[str, float] = field(default_factory=dict)  # 每步耗时
 
@@ -170,10 +172,17 @@ class WorkflowStateMachine:
 
     def is_terminal(self) -> bool:
         """是否已达到终止状态"""
-        return self._state in (WorkflowState.DONE, WorkflowState.ERROR)
+        return self._state in (
+            WorkflowState.READY_FOR_REVIEW,
+            WorkflowState.DONE,
+            WorkflowState.ERROR,
+        )
 
     def is_success(self) -> bool:
         return self._state == WorkflowState.DONE
+
+    def is_ready_for_review(self) -> bool:
+        return self._state == WorkflowState.READY_FOR_REVIEW
 
     def get_error(self) -> str:
         return self._error_message
@@ -219,6 +228,12 @@ class WorkflowStateMachine:
                 and self._context
                 and not self._context.images):
             next_state = WorkflowState.CONFIRMING_PUBLISH
+
+        if (self._state in (WorkflowState.TYPING_CONTENT, WorkflowState.ADDING_IMAGES)
+                and self._context
+                and not self._context.confirm_publish
+                and (self._state == WorkflowState.ADDING_IMAGES or not self._context.images)):
+            next_state = WorkflowState.READY_FOR_REVIEW
 
         if next_state is None:
             logger.error(f"未知的状态转换: {self._state.name}")

@@ -61,7 +61,7 @@ def create_mock_ocr(text_map: dict):
 
     mock.scan_screen = scan_screen
     mock._engine.recognize = recognize
-    mock.find_best = lambda target: next(
+    mock.find_best = lambda target, region=None: next(
         (b for b in scan_screen() if target in b.text), None
     )
     mock.find_text = lambda target: [
@@ -116,6 +116,7 @@ class TestPublisherIntegration:
                         'logged_in': True, 'page': '微信主界面',
                         'details': '导航标签可见'
                     })
+                    publisher.risk_detector.check = Mock()
 
                     # Mock calibrator
                     publisher.calibrator.calibrate = Mock(return_value=Mock(
@@ -285,7 +286,14 @@ class TestAPIServerIntegration:
 
         # Mock publisher
         mock_publisher = Mock()
-        mock_result = Mock(success=True, elapsed_seconds=5.2, step_times={}, error_message='')
+        mock_result = Mock(
+            success=True,
+            elapsed_seconds=5.2,
+            step_times={},
+            error_message='',
+            published=False,
+            stopped_before_publish=True,
+        )
         mock_publisher.publish = Mock(return_value=mock_result)
         state.publisher = mock_publisher
 
@@ -298,6 +306,10 @@ class TestAPIServerIntegration:
         data = response.json()
         assert data['success'] is True
         assert data['elapsed_seconds'] == 5.2
+        assert data['published'] is False
+        assert data['stopped_before_publish'] is True
+        task = mock_publisher.publish.call_args.args[0]
+        assert task.confirm_publish is False
 
     def test_status_endpoint(self):
         """测试 status API 端点"""
@@ -350,6 +362,7 @@ class TestAPIServerIntegration:
         })
         assert resp.status_code == 200
         schedule_id = resp.json()['id']
+        assert resp.json()['confirm_publish'] is False
 
         # List
         resp = client.get("/api/schedule")

@@ -49,6 +49,19 @@ from src.core.account_manager import AccountManager, WeChatWindowFinder
 STATE_FILE = Path(__file__).parent / "state.json"
 
 
+def configure_console_encoding():
+    """Keep Chinese text and emoji printable in the Windows console."""
+    if sys.platform != 'win32':
+        return
+    for stream_name in ('stdout', 'stderr'):
+        stream = getattr(sys, stream_name, None)
+        if stream and hasattr(stream, 'reconfigure'):
+            try:
+                stream.reconfigure(encoding='utf-8', errors='replace')
+            except (AttributeError, ValueError):
+                pass
+
+
 def save_state(publisher, results: list = None):
     """保存当前状态到磁盘"""
     state = {
@@ -86,6 +99,7 @@ def load_state() -> dict:
 
 _shutdown_requested = False
 _publisher_ref = None
+_agent_ref = None
 
 
 def _on_signal(signum, frame):
@@ -102,6 +116,12 @@ def _on_signal(signum, frame):
             results = getattr(_publisher_ref, '_stats', [])
             save_state(_publisher_ref, results)
             _publisher_ref.shutdown()
+        except Exception:
+            pass
+
+    if _agent_ref:
+        try:
+            _agent_ref.stop()
         except Exception:
             pass
 
@@ -143,11 +163,23 @@ def parse_args():
     parser.add_argument('--account', type=str, help='指定微信账号（多开时使用）')
     parser.add_argument('--accounts', action='store_true', help='列出所有检测到的微信窗口')
     parser.add_argument('--dry-run', action='store_true', help='空跑模式')
+    parser.add_argument(
+        '--confirm-publish',
+        action='store_true',
+        help='显式允许点击“发表”；缺省会安全停在编辑页',
+    )
     parser.add_argument('--resume', action='store_true', help='从上次中断恢复')
+    parser.add_argument('--agent', action='store_true', help='启动多数据源 Windows Agent')
+    parser.add_argument('--agent-config', type=str, help='Agent config.yaml 路径')
+    parser.add_argument(
+        '--agent-no-browser',
+        action='store_true',
+        help='启动 Agent 时不自动打开本地管理页',
+    )
     return parser.parse_args()
 
 
-def batch_from_file(filepath: str) -> list:
+def batch_from_file(filepath: str, confirm_publish: bool = False) -> list:
     """从文件读取批量发布任务"""
     tasks = []
     with open(filepath, 'r', encoding='utf-8') as f:
@@ -158,7 +190,11 @@ def batch_from_file(filepath: str) -> list:
             parts = line.split('|')
             text = parts[0].strip()
             images = parts[1].strip().split() if len(parts) > 1 else []
-            tasks.append(PublishTask(text=text, images=images))
+            tasks.append(PublishTask(
+                text=text,
+                images=images,
+                confirm_publish=confirm_publish,
+            ))
     return tasks
 
 
@@ -182,11 +218,20 @@ def interactive_mode(publisher: EventDrivenPublisher):
             img_input = input("🖼️  图片路径（可选，空格分隔，直接回车跳过）: ").strip()
             images = img_input.split() if img_input else []
 
-            task = PublishTask(text=text, images=images)
+            confirmation = input(
+                "输入 PUBLISH 才会点击发表；直接回车仅准备到编辑页: "
+            ).strip()
+            task = PublishTask(
+                text=text,
+                images=images,
+                confirm_publish=confirmation == 'PUBLISH',
+            )
             result = publisher.publish(task)
 
-            if result.success:
+            if result.published:
                 print(f"✅ 发布成功！(耗时 {result.elapsed_seconds:.0f}s)\n")
+            elif result.stopped_before_publish:
+                print("🛑 内容已准备，安全停在发表前；请在微信中检查或手动取消\n")
             else:
                 print(f"❌ 发布失败: {result.error_message}\n")
 
@@ -251,6 +296,7 @@ def schedule_mode(publisher: EventDrivenPublisher):
                     task = PublishTask(
                         text=item.get('text', ''),
                         images=item.get('images', []),
+                        confirm_publish=item.get('confirm_publish', False),
                     )
                     publisher.publish(task)
             except Exception as e:
@@ -340,9 +386,7 @@ def run_self_test(publisher) -> int:
 
     # 5. 微信进程
     try:
-        import win32gui
-        hwnd = win32gui.FindWindow("WeChatMainWndForPC", None)
-        if hwnd:
+        if WeChatWindowFinder.enum_all():
             results.append(('✅', '微信进程', '运行中'))
         else:
             results.append(('❌', '微信进程', '未找到 — 请启动微信'))
@@ -378,14 +422,48 @@ def run_self_test(publisher) -> int:
 
 
 def main():
-    global _publisher_ref
+    global _publisher_ref, _agent_ref
 
+    configure_console_encoding()
     args = parse_args()
+
+    if args.agent:
+        from src.agent import PublisherAgentApp
+
+        _agent_ref = PublisherAgentApp(config_path=args.agent_config)
+        _agent_ref.run_forever(open_browser=not args.agent_no_browser)
+        return 0
+
+    # 纯空跑在创建发布器前结束，不加载 OCR，也不激活或操作微信窗口。
+    if args.dry_run:
+        if args.text:
+            print(f"🔍 空跑模式：文案 '{args.text[:30]}...'，图片 {len(args.images or [])} 张")
+            return 0
+        if args.batch:
+            tasks = batch_from_file(args.batch, confirm_publish=args.confirm_publish)
+            for i, task in enumerate(tasks):
+                print(f"  [{i+1}] {task.text[:40]}...")
+            return 0
+        print("❌ 空跑模式需要 --text 或 --batch")
+        return 1
 
     # 初始化（单账号或多账号模式）
     publisher = None
     account_mgr = None
     windows = WeChatWindowFinder.enum_all()
+
+    if args.accounts:
+        if not windows:
+            print("未发现运行中的微信窗口")
+        else:
+            print(f"发现 {len(windows)} 个微信窗口:\n")
+            for hwnd, title in windows:
+                info = WeChatWindowFinder.get_window_info(hwnd)
+                if info:
+                    display_name = f"{info.name} (PID={info.process_id})"
+                    print(f"  📱 {display_name:30s} "
+                          f"{'(最小化)' if info.is_minimized else ''}")
+        return 0
 
     if args.account:
         account_mgr = AccountManager(bus=None)
@@ -420,21 +498,6 @@ def main():
         _publisher_ref = publisher
 
     try:
-        # 列出所有微信窗口
-        if args.accounts:
-            windows = WeChatWindowFinder.enum_all()
-            if not windows:
-                print("未发现运行中的微信窗口")
-            else:
-                print(f"发现 {len(windows)} 个微信窗口:\n")
-                for hwnd, title in windows:
-                    info = WeChatWindowFinder.get_window_info(hwnd)
-                    if info:
-                        display_name = f"{info.name} (PID={info.process_id})"
-                        print(f"  📱 {display_name:30s} "
-                              f"{'(最小化)' if info.is_minimized else ''}")
-            return 0
-
         # 查看状态模式（不需要完整初始化）
         if args.status:
             if publisher.operator.find_wechat_window():
@@ -485,15 +548,18 @@ def main():
 
         # 单次发布
         if args.text:
-            task = PublishTask(text=args.text, images=args.images or [])
-
-            if args.dry_run:
-                print(f"🔍 空跑模式：将发布 '{task.text[:30]}...'")
-                return 0
+            task = PublishTask(
+                text=args.text,
+                images=args.images or [],
+                confirm_publish=args.confirm_publish,
+            )
 
             result = publisher.publish(task)
-            if result.success:
+            if result.published:
                 print(f"✅ 发布成功 (耗时 {result.elapsed_seconds:.0f}s)")
+                return 0
+            elif result.stopped_before_publish:
+                print("🛑 内容已准备，安全停在发表前；请在微信中检查或手动取消")
                 return 0
             else:
                 print(f"❌ 发布失败: {result.error_message}")
@@ -501,13 +567,8 @@ def main():
 
         # 批量发布
         if args.batch:
-            tasks = batch_from_file(args.batch)
+            tasks = batch_from_file(args.batch, confirm_publish=args.confirm_publish)
             print(f"📋 批量发布: {len(tasks)} 个任务")
-
-            if args.dry_run:
-                for i, task in enumerate(tasks):
-                    print(f"  [{i+1}] {task.text[:40]}...")
-                return 0
 
             results = publisher.publish_batch(tasks)
             success_count = sum(1 for r in results if r.success)

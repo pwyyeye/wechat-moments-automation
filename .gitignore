@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+packaging/output/
 .eggs/
 *.egg
 
@@ -35,6 +36,7 @@ templates/icons/*.ico
 
 # Debug screenshots
 debug_screenshots/
+.validation/
 
 # Environment
 .env
