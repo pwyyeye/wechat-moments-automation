@@ -22,6 +22,7 @@ UninstallDisplayIcon={app}\{#AppExeName}
 Source: "..\dist\WechatPublisherAgent\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\scripts\install-startup.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\scripts\remove-startup.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
+Source: "..\scripts\verify-installed-agent.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Wechat Publisher Agent"; Filename: "{app}\{#AppExeName}"; Parameters: "--agent"
