@@ -5,11 +5,21 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $pythonPath = (Resolve-Path (Join-Path $repoRoot $Python)).Path
+$dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
+if ($dotnetCommand) {
+    $dotnetPath = $dotnetCommand.Source
+} else {
+    $dotnetPath = Join-Path $env:ProgramFiles "dotnet\dotnet.exe"
+    if (-not (Test-Path -LiteralPath $dotnetPath)) {
+        throw ".NET 8+ SDK is required to build the bundled WeChat UIA helper."
+    }
+}
 
 Push-Location $repoRoot
 try {
     & $pythonPath -m pip install -e ".[full,agent,packaging]"
     & $pythonPath -m pytest -q
+    & $dotnetPath publish "src\cs_uia_service\WeChatUIA.csproj" -c Release -r win-x64 --self-contained true -o "src\cs_uia_service\publish"
     & $pythonPath -m PyInstaller --noconfirm --clean "packaging\WechatPublisherAgent.spec"
 
     $compilerCandidates = @(

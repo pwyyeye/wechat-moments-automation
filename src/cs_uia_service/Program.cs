@@ -10,6 +10,7 @@
  *   WeChatUIA.exe dump-tree    — 输出控件树 JSON
  *   WeChatUIA.exe check-login  — 检测登录状态
  *   WeChatUIA.exe activate     — 激活微信窗口
+ *   WeChatUIA.exe open-moments — 仅打开朋友圈列表
  *   WeChatUIA.exe monitor      — 窗口位置监控
  *   WeChatUIA.exe get-rect     — 窗口位置
  */
@@ -114,6 +115,12 @@ namespace WeChatUIA
         public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
         [DllImport("user32.dll")]
+        public static extern bool SetCursorPos(int X, int Y);
+
+        [DllImport("user32.dll")]
+        public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+
+        [DllImport("user32.dll")]
         public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax,
             IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc,
             uint idProcess, uint idThread, uint dwFlags);
@@ -134,6 +141,8 @@ namespace WeChatUIA
         public const uint SWP_NOSIZE = 0x0001;
         public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
         public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+        public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+        public const uint MOUSEEVENTF_LEFTUP = 0x0004;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -213,7 +222,7 @@ namespace WeChatUIA
             if (args.Length == 0)
             {
                 Console.Error.WriteLine("用法: WeChatUIA.exe <command>");
-                Console.Error.WriteLine("命令: dump-tree | check-login | activate | monitor | get-rect");
+                Console.Error.WriteLine("命令: dump-tree | check-login | activate | open-moments | monitor | get-rect");
                 return 1;
             }
 
@@ -224,6 +233,7 @@ namespace WeChatUIA
                     "dump-tree" => CmdDumpTree(),
                     "check-login" => CmdCheckLogin(),
                     "activate" => CmdActivate(),
+                    "open-moments" => CmdOpenMoments(),
                     "monitor" => CmdMonitor(),
                     "get-rect" => CmdGetRect(),
                     _ => 1
@@ -454,6 +464,73 @@ namespace WeChatUIA
             WeChatWindow.Activate(hwnd);
             Console.WriteLine("{\"success\":true}");
             return 0;
+        }
+
+        static int CmdOpenMoments()
+        {
+            var hwnd = WeChatWindow.Find();
+            if (hwnd == IntPtr.Zero)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "wechat-window-not-found" }, _jsonOpts));
+                return 0;
+            }
+
+            WeChatWindow.Activate(hwnd);
+            var root = AutomationElement.FromHandle(hwnd);
+            Thread.Sleep(500);
+
+            var condition = new PropertyCondition(AutomationElement.NameProperty, "朋友圈");
+            var element = root.FindFirst(TreeScope.Descendants, condition);
+            if (element == null)
+            {
+                Thread.Sleep(500);
+                element = root.FindFirst(TreeScope.Descendants, condition);
+            }
+            if (element == null)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "moments-control-not-found" }, _jsonOpts));
+                return 0;
+            }
+
+            if (TryInvoke(element, out var method))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { success = true, method }, _jsonOpts));
+                return 0;
+            }
+
+            Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "moments-control-not-invokable" }, _jsonOpts));
+            return 0;
+        }
+
+        static bool TryInvoke(AutomationElement element, out string method)
+        {
+            method = "";
+            try
+            {
+                if (element.TryGetCurrentPattern(InvokePattern.Pattern, out var invokePattern))
+                {
+                    ((InvokePattern)invokePattern).Invoke();
+                    method = "invoke";
+                    return true;
+                }
+                if (element.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var selectionPattern))
+                {
+                    ((SelectionItemPattern)selectionPattern).Select();
+                    method = "selection";
+                    return true;
+                }
+                if (element.TryGetClickablePoint(out var point))
+                {
+                    Win32.SetCursorPos((int)point.X, (int)point.Y);
+                    Win32.mouse_event(Win32.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(80);
+                    Win32.mouse_event(Win32.MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+                    method = "clickable-point";
+                    return true;
+                }
+            }
+            catch { }
+            return false;
         }
 
         static int CmdMonitor()

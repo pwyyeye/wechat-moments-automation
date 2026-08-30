@@ -4,7 +4,7 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from .environment import probe_environment
+from .environment import prepare_moments_window, probe_environment
 from .models import AgentSnapshot, PublisherTask
 
 
@@ -47,11 +47,14 @@ class DesktopPublishExecutor:
         if not snapshot.interactive_session or not snapshot.desktop_unlocked:
             return snapshot
         with self._lock:
-            publisher = self._get_publisher()
-            if not publisher.initialize():
-                return self.snapshot()
-            login = publisher.operator.check_login_state()
-            return snapshot.model_copy(update={"logged_in": bool(login.get("logged_in"))})
+            moments_ready = snapshot.logged_in and prepare_moments_window()
+            refreshed = self.snapshot()
+            return refreshed.model_copy(
+                update={
+                    "logged_in": snapshot.logged_in,
+                    "moments_window_ready": moments_ready,
+                }
+            )
 
     def publish(
         self,

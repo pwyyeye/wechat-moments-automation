@@ -33,6 +33,7 @@ logs/
 # Templates (auto-generated at runtime)
 templates/icons/*.png
 templates/icons/*.ico
+!templates/icons/moments_tab.png
 
 # Debug screenshots
 debug_screenshots/

@@ -157,6 +157,18 @@ class UIABridge:
         data = json.loads(result)
         return data.get('success', False)
 
+    def open_moments(self) -> bool:
+        """Open only the Moments list through the dedicated safe command."""
+        result = self._run("open-moments")
+        if result is None:
+            return False
+        data = json.loads(result)
+        if not data.get('success', False):
+            logger.error("朋友圈预检失败: %s", data.get('reason', 'unknown'))
+            return False
+        logger.info("朋友圈列表已打开: %s", data.get('method', 'unknown'))
+        return True
+
     def get_window_rect(self) -> Optional[Tuple[int, int, int, int]]:
         """
         获取微信窗口位置。
