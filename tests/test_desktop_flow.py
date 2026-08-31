@@ -36,6 +36,7 @@ def test_desktop_editor_reuses_an_open_compose_panel() -> None:
     publisher = build_desktop_publisher([object()])
 
     assert publisher._prepare_desktop_editor(["first.png"])
+    assert publisher._prepared_image_count == 1
     publisher.operator.click_moments_camera.assert_not_called()
     publisher.file_dialog.select_file_via_pywinauto.assert_not_called()
 

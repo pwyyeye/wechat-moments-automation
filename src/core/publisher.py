@@ -451,6 +451,9 @@ class EventDrivenPublisher:
         region = self.operator.active_window_region()
         self.ocr._invalidate_cache()
         if self.ocr.find_best('这一刻的想法', region=region):
+            # The desktop 4.x compose panel is opened by selecting its first
+            # image. Reusing that panel must not append the same image again.
+            self._prepared_image_count = 1
             return True
 
         if not image_paths:
