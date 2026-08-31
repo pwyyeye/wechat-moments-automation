@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import webbrowser
 from pathlib import Path
@@ -39,6 +40,7 @@ class PublisherAgentApp:
         self._configure_logging()
         self._config_lock = threading.RLock()
         self._preflight_lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.executor = executor or DesktopPublishExecutor()
         self.credential_store = credential_store or DpapiCredentialStore(
@@ -73,7 +75,11 @@ class PublisherAgentApp:
         self._worker_thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
         self._identity_thread: threading.Thread | None = None
+        self._shutdown_watchdog_thread: threading.Thread | None = None
         self._server: uvicorn.Server | None = None
+        self._server_stopped = threading.Event()
+        self._shutdown_grace_seconds = 8.0
+        self._force_exit = os._exit
         self._stopped = False
 
     def _import_bootstrap_if_present(self) -> None:
@@ -125,6 +131,7 @@ class PublisherAgentApp:
 
     def run_forever(self, *, open_browser: bool = True) -> None:
         self.start_background()
+        self._server_stopped.clear()
         url = (
             f"http://{self.config.runtime.local_admin_host}:"
             f"{self.config.runtime.local_admin_port}"
@@ -150,16 +157,44 @@ class PublisherAgentApp:
             raise
         finally:
             self._server = None
-            self.stop()
+            try:
+                self.stop()
+            finally:
+                self._server_stopped.set()
 
     def request_shutdown(self) -> None:
         """Stop accepting work and ask the local HTTP server to exit."""
-        if self.worker.is_active or self.ledger.get_active_task() is not None:
+        if self.ledger.get_active_task() is not None:
             raise RuntimeError("当前有发布任务正在执行，任务结束后再安全退出")
-        logger.info("safe shutdown requested from local admin")
-        self.stop_event.set()
-        if self._server is not None:
-            self._server.should_exit = True
+        with self._shutdown_lock:
+            if self.stop_event.is_set():
+                return
+            logger.info("safe shutdown requested from local admin")
+            self.stop_event.set()
+            if self._server is not None:
+                self._server.should_exit = True
+                self._start_shutdown_watchdog()
+
+    def _start_shutdown_watchdog(self) -> None:
+        """Guarantee exit if an OCR/UIA request prevents Uvicorn from draining."""
+        if self._shutdown_watchdog_thread is not None:
+            return
+
+        def watchdog() -> None:
+            if self._server_stopped.wait(self._shutdown_grace_seconds):
+                return
+            logger.warning(
+                "graceful shutdown exceeded %.1fs; forcing process exit",
+                self._shutdown_grace_seconds,
+            )
+            self._force_exit(0)
+
+        self._shutdown_watchdog_thread = threading.Thread(
+            target=watchdog,
+            name="shutdown-watchdog",
+            daemon=True,
+        )
+        self._shutdown_watchdog_thread.start()
 
     def stop(self) -> None:
         if self._stopped:
@@ -207,7 +242,7 @@ class PublisherAgentApp:
                 "id": self.config.agent.id,
                 "displayName": self.config.agent.display_name,
                 "accountKey": self.config.agent.account_key,
-                "version": "0.3.3",
+                "version": "0.3.4",
             },
             "wechat": wechat_status,
             "worker": {

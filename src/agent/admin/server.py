@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Header, HTTPException
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 def create_admin_app(agent: "PublisherAgentApp") -> FastAPI:
     app = FastAPI(
         title="WeChat Publisher Agent Local Admin",
-        version="0.3.3",
+        version="0.3.4",
         docs_url="/api/docs",
         redoc_url=None,
     )
@@ -128,11 +127,11 @@ def create_admin_app(agent: "PublisherAgentApp") -> FastAPI:
     def shutdown(x_local_agent_action: str | None = Header(default=None)):
         if x_local_agent_action != "confirmed":
             raise HTTPException(403, "缺少本机操作确认")
-        if agent.worker.is_active or agent.ledger.get_active_task() is not None:
-            raise HTTPException(409, "当前有发布任务正在执行，任务结束后再安全退出")
-        timer = threading.Timer(0.25, agent.request_shutdown)
-        timer.daemon = True
-        timer.start()
+        try:
+            agent.request_shutdown()
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
+
         return {"accepted": True, "message": "Agent 正在安全退出"}
 
     @app.get("/api/tasks")
@@ -169,7 +168,7 @@ ADMIN_HTML = r"""<!doctype html>
 <body><main>
   <section class="mast"><div><div class="kicker">Windows Agent / Local Only</div><h1>朋友圈发布站</h1></div><div class="stamp">只监听 127.0.0.1<br>凭据由 Windows DPAPI 保存</div></section>
   <section class="grid">
-    <article class="card"><h2>本机状态</h2><div class="facts" id="facts"></div><div class="toolbar" style="margin-top:16px"><button onclick="preflight()">环境预检</button><button class="alt" onclick="identifyWechat()">重新识别微信</button><button class="alt" onclick="refreshAll()">刷新</button><button class="danger" onclick="shutdownAgent()">安全退出 Agent</button></div><div class="notice" id="notice"></div></article>
+    <article class="card"><h2>本机状态</h2><div class="facts" id="facts"></div><div class="toolbar" style="margin-top:16px"><button onclick="preflight()">环境预检</button><button class="alt" onclick="identifyWechat()">重新识别微信</button><button class="alt" onclick="refreshAll()">刷新</button><button class="danger" onclick="shutdownAgent(event)">安全退出 Agent</button></div><div class="notice" id="notice"></div></article>
     <article class="card"><div style="display:flex;justify-content:space-between;gap:12px"><div><h2>内容数据源</h2><div class="meta" style="margin:-10px 0 14px">携带部署配置安装时会自动导入默认内容中心和 API Key；每个来源的 URL 均可独立编辑。</div></div><button onclick="openSource()">+ 添加来源</button></div><div class="sources" id="sources"></div></article>
     <article class="card" style="grid-column:1/-1"><h2>最近任务</h2><div style="overflow:auto"><table class="task-table"><thead><tr><th>来源</th><th>任务</th><th>状态</th><th>尝试</th><th>最终点击</th><th>更新时间</th></tr></thead><tbody id="tasks"></tbody></table></div></article>
   </section>
@@ -191,5 +190,5 @@ async function refreshAll(){try{const [s,t]=await Promise.all([api('/api/status'
 function renderSources(){$('#sources').innerHTML=sourceData.map(s=>`<div class="source ${s.healthState}"><div><h3>${esc(s.name)}${s.id==='auto-content-production'?' · 默认':''} · ${esc(s.healthState)}</h3><div class="meta">${esc(s.baseUrl)} · 账号 ${esc(s.accountKey)} · 凭据 ${s.hasCredential?'已安全保存':'待配置'} · 权重 ${s.weight} · 请求 ${s.requestCount} / 错误 ${s.errorCount} · 最近 ${s.lastLatencyMs??'-'} ms${s.lastErrorCode?' · '+esc(s.lastErrorCode):''}</div></div><div class="actions"><button onclick="testSource('${esc(s.id)}')" ${s.hasCredential?'':'disabled'}>测试</button><button class="alt" onclick="openSource('${esc(s.id)}')">${s.hasCredential?'编辑连接':'配置 API Key'}</button><button class="danger" onclick="removeSource('${esc(s.id)}')">删除</button></div></div>`).join('')||'<div class="meta">没有可用数据源。刷新页面会重新检查默认来源，也可以手动添加。</div>'}
 function openSource(id){const f=$('#sourceForm');f.reset();f.id.readOnly=false;f.enabled.checked=true;f.weight.value=1;f.accountKey.value='wechat-main';f.authType.value='api_key_header';f.headerName.value='x-api-key';const s=sourceData.find(x=>x.id===id);$('#dialogTitle').textContent=s?'编辑数据源 URL 与连接参数':'添加数据源';f.dataset.edit=id||'';if(s){f.id.value=s.id;f.id.readOnly=true;f.name.value=s.name;f.baseUrl.value=s.baseUrl;f.accountKey.value=s.accountKey;f.weight.value=s.weight;f.enabled.checked=s.enabled;f.authType.value=s.authType;f.headerName.value=s.headerName||'';f.allowedHosts.value=(s.allowedHosts||[]).join('\n');f.allowPrivateNetwork.checked=Boolean(s.allowPrivateNetwork)}sourceDialog.showModal()}
 $('#sourceForm').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget,d=new FormData(f),id=d.get('id'),editing=f.dataset.edit;const authType=d.get('authType'),baseUrl=String(d.get('baseUrl'));let allowedHosts=String(d.get('allowedHosts')).split(/\s+/).filter(Boolean);if(!allowedHosts.length){try{allowedHosts=[new URL(baseUrl).hostname]}catch{}}const body={id,name:d.get('name'),baseUrl,enabled:d.get('enabled')==='on',weight:Number(d.get('weight')),accountKey:d.get('accountKey'),auth:{type:authType,credentialRef:'dpapi://'+id,...(authType==='api_key_header'?{headerName:d.get('headerName')}:{})},mediaSecurity:{allowedHosts,allowPrivateNetwork:d.get('allowPrivateNetwork')==='on'}};if(d.get('credential'))body.credential=d.get('credential');try{await api(editing?'/api/sources/'+id:'/api/sources',{method:editing?'PUT':'POST',body:JSON.stringify(body)});sourceDialog.close();notice('配置已保存并立即应用','success');await refreshAll()}catch(err){notice(err.message,'error')}});
-async function testSource(id){try{const x=await api('/api/sources/'+id+'/test',{method:'POST'});notice('连接成功：'+x.sourceName+' / '+x.versions.join(','),'success');await refreshAll()}catch(e){notice('连接失败：'+e.message,'error')}}async function removeSource(id){if(!confirm('删除来源 '+id+'？本地凭据也会删除。'))return;try{await api('/api/sources/'+id,{method:'DELETE'});notice('来源已删除','success');await refreshAll()}catch(e){notice(e.message,'error')}}async function preflight(){notice('正在执行环境预检…（最多等待 20 秒）','info');try{const x=await api('/api/preflight',{method:'POST'},22000);notice(`预检：微信 ${x.running?'运行中':'未运行'}，桌面 ${x.desktopUnlocked?'可交互':'不可交互'}，朋友圈 ${x.momentsWindowReady?'就绪':'未就绪'}`,x.momentsWindowReady?'success':'error');await refreshAll()}catch(e){notice(e.message,'error')}}async function identifyWechat(){notice('正在打开微信资料卡识别昵称，请暂时不要操作鼠标…','info');try{const x=await api('/api/wechat/identify',{method:'POST'},45000);notice(x.recognized?`识别成功：${x.nickname}${x.wechatId?' / '+x.wechatId:''}`:x.diagnostic.message,x.recognized?'success':'error');await refreshAll()}catch(e){notice(e.message,'error')}}async function shutdownAgent(){if(!confirm('确定安全退出 Agent？\n\n当前不会再领取新任务，下次登录 Windows 或从开始菜单启动后恢复。'))return;try{await api('/api/shutdown',{method:'POST'});clearInterval(refreshTimer);document.querySelector('main').innerHTML='<article class="card" style="margin-top:12vh;text-align:center"><h2>Agent 已安全退出</h2><p class="meta">后台任务、媒体缓存和本地账本已关闭。可以关闭此页面。</p></article>'}catch(e){notice(e.message,'error')}}function notice(x,kind='error'){const el=$('#notice');el.textContent=x;el.className='notice '+kind}function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}refreshAll();refreshTimer=setInterval(refreshAll,15000);
+async function testSource(id){try{const x=await api('/api/sources/'+id+'/test',{method:'POST'});notice('连接成功：'+x.sourceName+' / '+x.versions.join(','),'success');await refreshAll()}catch(e){notice('连接失败：'+e.message,'error')}}async function removeSource(id){if(!confirm('删除来源 '+id+'？本地凭据也会删除。'))return;try{await api('/api/sources/'+id,{method:'DELETE'});notice('来源已删除','success');await refreshAll()}catch(e){notice(e.message,'error')}}async function preflight(){notice('正在执行环境预检…（最多等待 20 秒）','info');try{const x=await api('/api/preflight',{method:'POST'},22000);notice(`预检：微信 ${x.running?'运行中':'未运行'}，桌面 ${x.desktopUnlocked?'可交互':'不可交互'}，朋友圈 ${x.momentsWindowReady?'就绪':'未就绪'}`,x.momentsWindowReady?'success':'error');await refreshAll()}catch(e){notice(e.message,'error')}}async function identifyWechat(){notice('正在打开微信资料卡识别昵称，请暂时不要操作鼠标…','info');try{const x=await api('/api/wechat/identify',{method:'POST'},45000);notice(x.recognized?`识别成功：${x.nickname}${x.wechatId?' / '+x.wechatId:''}`:x.diagnostic.message,x.recognized?'success':'error');await refreshAll()}catch(e){notice(e.message,'error')}}async function shutdownAgent(clickEvent){if(!confirm('确定安全退出 Agent？\n\n当前不会再领取新任务，下次登录 Windows 或从开始菜单启动后恢复。'))return;const button=clickEvent?.currentTarget;if(button)button.disabled=true;notice('正在停止 Agent…','info');try{await api('/api/shutdown',{method:'POST'},5000);clearInterval(refreshTimer);document.querySelector('main').innerHTML='<article class="card" style="margin-top:12vh;text-align:center"><h2>Agent 正在退出</h2><p class="meta">正在停止后台线程；即使微信识别无响应，进程也会在 8 秒内结束。可以关闭此页面。</p></article>'}catch(e){if(button)button.disabled=false;notice(e.message,'error')}}function notice(x,kind='error'){const el=$('#notice');el.textContent=x;el.className='notice '+kind}function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}refreshAll();refreshTimer=setInterval(refreshAll,15000);
 </script></body></html>"""

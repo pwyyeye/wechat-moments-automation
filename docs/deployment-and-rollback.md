@@ -37,6 +37,16 @@ The uninstaller removes the executable and login task but preserves the data dir
 
 Protocol v1 permits additive optional fields. An Agent must reject an unknown required protocol version but ignore unknown optional fields.
 
+## Local shutdown
+
+Agent 0.3.4 and later distinguish a real claimed publish task from local
+preflight or WeChat identity recognition. A claimed publish task blocks safe
+shutdown so the final-click ledger cannot be interrupted. Local recognition
+and preflight do not block shutdown. The loopback page immediately stops new
+polling, asks Uvicorn to drain, and uses an eight-second watchdog to terminate
+the process if a native OCR/UIA call cannot return. The watchdog does not stop
+or log out WeChat and does not delete the local ledger or DPAPI credentials.
+
 ## Rollback
 
 1. Stop the Agent from Task Manager or delete the login task with `scripts/remove-startup.ps1`.

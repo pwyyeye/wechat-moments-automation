@@ -180,6 +180,67 @@ def test_admin_exposes_safe_shutdown_and_manual_identity_actions(tmp_path, monke
     app.stop()
 
 
+def test_shutdown_is_allowed_while_a_local_desktop_action_holds_the_worker_lock(
+    tmp_path, monkeypatch
+):
+    app = PublisherAgentApp(
+        tmp_path / "config.yaml",
+        executor=FakeExecutor(),
+        credential_store=InMemoryCredentialStore(),
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+    client = TestClient(app.admin_app)
+    requested = []
+    monkeypatch.setattr(app, "request_shutdown", lambda: requested.append(True))
+
+    with app.worker.exclusive_desktop_action():
+        response = client.post(
+            "/api/shutdown",
+            headers={"X-Local-Agent-Action": "confirmed"},
+        )
+
+    assert response.status_code == 202
+    import time
+
+    deadline = time.monotonic() + 1
+    while not requested and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert requested == [True]
+    app.stop()
+
+
+def test_shutdown_watchdog_forces_exit_when_server_cannot_drain(tmp_path):
+    app = PublisherAgentApp(
+        tmp_path / "config.yaml",
+        executor=FakeExecutor(),
+        credential_store=InMemoryCredentialStore(),
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+
+    class StuckServer:
+        should_exit = False
+
+    forced = []
+    app._server = StuckServer()
+    app._shutdown_grace_seconds = 0.02
+    app._force_exit = lambda code: forced.append(code)
+
+    app.request_shutdown()
+
+    import time
+
+    deadline = time.monotonic() + 1
+    while not forced and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert app._server.should_exit is True
+    assert forced == [0]
+    app._server_stopped.set()
+    app._server = None
+    app.stop()
+
+
 def test_admin_html_handles_non_json_errors_without_masking_them(tmp_path):
     app = PublisherAgentApp(
         tmp_path / "config.yaml",
@@ -198,6 +259,8 @@ def test_admin_html_handles_non_json_errors_without_masking_them(tmp_path):
     assert "f.authType.value=s.authType" in html
     assert "timeoutMs=10000" in html
     assert "最多等待 20 秒" in html
+    assert "shutdownAgent(event)" in html
+    assert "进程也会在 8 秒内结束" in html
     app.stop()
 
 
