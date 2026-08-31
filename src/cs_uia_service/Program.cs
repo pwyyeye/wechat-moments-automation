@@ -135,6 +135,7 @@ namespace WeChatUIA
         }
 
         public const int SW_RESTORE = 9;
+        public const int SW_SHOW = 5;
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
         public const uint SWP_NOMOVE = 0x0002;
@@ -154,28 +155,46 @@ namespace WeChatUIA
         public static IntPtr Find()
         {
             IntPtr result = IntPtr.Zero;
+            long bestScore = 0;
 
             Win32.EnumWindows((hwnd, _) =>
             {
-                if (!Win32.IsWindowVisible(hwnd)) return true;
-
                 var cls = new System.Text.StringBuilder(256);
                 Win32.GetClassName(hwnd, cls, 256);
                 var cn = cls.ToString();
+                Win32.GetWindowRect(hwnd, out var rect);
+                var width = rect.Right - rect.Left;
+                var height = rect.Bottom - rect.Top;
+                if (width < 420 || height < 350) return true;
 
-                // Qt 版本: 类名包含 Qt 且标题为 "微信"
-                if (cn.Contains("Qt"))
+                var title = new System.Text.StringBuilder(256);
+                Win32.GetWindowText(hwnd, title, 256);
+                var windowTitle = title.ToString();
+                var isKnownTitle = windowTitle is "微信" or "Weixin" or "WeChat";
+                var isWeChatProcess = false;
+                try
                 {
-                    var title = new System.Text.StringBuilder(256);
-                    Win32.GetWindowText(hwnd, title, 256);
-                    if (title.ToString() == "微信" && result == IntPtr.Zero)
-                    {
-                        result = hwnd;
-                    }
+                    Win32.GetWindowThreadProcessId(hwnd, out var pid);
+                    var processName = Process.GetProcessById((int)pid).ProcessName;
+                    isWeChatProcess = processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase) ||
+                        processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase);
                 }
-                // 传统 Win32 版本
-                else if (cn == "WeChatMainWndForPC")
+                catch { }
+
+                var isKnownClass = cn == "WeChatMainWndForPC";
+                if (!isKnownClass && !(cn.Contains("Qt") && isKnownTitle) && !isWeChatProcess)
                 {
+                    return true;
+                }
+
+                long score = (long)width * height;
+                if (isKnownClass) score += 100_000_000;
+                if (isKnownTitle) score += 50_000_000;
+                if (isWeChatProcess) score += 20_000_000;
+                if (Win32.IsWindowVisible(hwnd)) score += 5_000_000;
+                if (score > bestScore)
+                {
+                    bestScore = score;
                     result = hwnd;
                 }
 
@@ -187,6 +206,8 @@ namespace WeChatUIA
 
         public static bool Activate(IntPtr hwnd)
         {
+            if (!Win32.IsWindowVisible(hwnd))
+                Win32.ShowWindow(hwnd, Win32.SW_SHOW);
             if (Win32.IsIconic(hwnd))
                 Win32.ShowWindow(hwnd, Win32.SW_RESTORE);
             Win32.SetWindowPos(hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0, Win32.SWP_NOMOVE | Win32.SWP_NOSIZE);
