@@ -187,6 +187,8 @@ class AgentSnapshot(ContractModel):
     logged_in: bool = Field(alias="loggedIn")
     moments_window_ready: bool = Field(alias="momentsWindowReady")
     wechat_version: str = Field(alias="wechatVersion")
+    wechat_nickname: str | None = Field(default=None, alias="wechatNickname")
+    wechat_id: str | None = Field(default=None, alias="wechatId")
     interactive_session: bool = Field(alias="interactiveSession")
     desktop_unlocked: bool = Field(alias="desktopUnlocked")
 

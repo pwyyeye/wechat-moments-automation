@@ -157,7 +157,7 @@ class PublisherAgentApp:
                 "id": self.config.agent.id,
                 "displayName": self.config.agent.display_name,
                 "accountKey": self.config.agent.account_key,
-                "version": "0.2.0",
+                "version": "0.3.0",
             },
             "wechat": snapshot.model_dump(by_alias=True, mode="json"),
             "worker": {

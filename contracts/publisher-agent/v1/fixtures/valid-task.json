@@ -14,6 +14,8 @@
   "target": {
     "platform": "wechat_moments",
     "accountKey": "wechat-main",
+    "nickname": "测试微信号",
+    "wechatId": "wxid_test_account",
     "visibility": {
       "type": "public"
     }

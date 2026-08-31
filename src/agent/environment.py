@@ -194,16 +194,30 @@ def probe_environment() -> AgentSnapshot:
     logged_in = False
     moments_ready = False
     version = "unknown"
+    nickname = None
+    wechat_id = None
     try:
         from src.core.account_manager import WeChatWindowFinder
 
-        running = bool(WeChatWindowFinder.enum_all())
+        from .wechat_identity import find_wechat_main_window
+
+        running = bool(WeChatWindowFinder.enum_all()) or find_wechat_main_window() is not None
     except Exception:
         running = False
     if running:
         # The full publisher performs semantic login checks before execution.
         # Heartbeats deliberately stay read-only and avoid activating windows.
         logged_in = True
+        if is_interactive_session() and is_desktop_unlocked():
+            try:
+                from .wechat_identity import get_wechat_identity
+
+                identity = get_wechat_identity()
+                if identity:
+                    nickname = identity.nickname
+                    wechat_id = identity.wechat_id
+            except Exception:
+                logger.exception("微信账号身份检测失败")
     try:
         from src.executor.version_detector import VersionDetector
 
@@ -218,6 +232,8 @@ def probe_environment() -> AgentSnapshot:
         loggedIn=logged_in,
         momentsWindowReady=moments_ready,
         wechatVersion=version,
+        wechatNickname=nickname,
+        wechatId=wechat_id,
         interactiveSession=is_interactive_session(),
         desktopUnlocked=is_desktop_unlocked(),
     )

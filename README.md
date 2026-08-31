@@ -2,7 +2,7 @@
 
 版本无关的 PC 微信朋友圈自动化。事件驱动架构 + 语义级定位 + 三层集成。
 
-[![Tests](https://img.shields.io/badge/tests-66%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-110%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![.NET](https://img.shields.io/badge/.NET-10.0-purple)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
@@ -48,6 +48,13 @@ python main.py --status
 | **版本追踪** | 检测微信版本变化，自动重建模板库 |
 | **任务持久** | 断点续传 + 定时调度 (cron) + 发布历史 |
 | **通知系统** | Telegram Bot + 邮件 + Windows 系统通知 |
+
+### 内容中心 Agent 0.3.0
+
+- 本机资料卡 OCR 识别当前登录微信昵称和微信号，并随各数据源心跳上报。
+- 每个任务按 `deviceId + accountKey` 精确领取；同一内容中心的其他设备不能领取指定账号任务。
+- 公共群发由内容中心展开为“每个微信号一条任务”，每个账号只领取自己的一份。
+- 支持多个 `standard-http-v1` 数据源，来源凭据使用当前 Windows 用户 DPAPI 保存。
 
 ## 架构
 
@@ -150,7 +157,7 @@ python main.py --test
 
 ```bash
 python -m pytest tests/ -v
-# 66 passed, 0 failed
+# 110 passed, 0 failed
 ```
 
 ## 文件结构

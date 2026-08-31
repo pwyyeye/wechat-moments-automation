@@ -74,6 +74,16 @@
         "accountKey": {
           "$ref": "#/$defs/opaqueId"
         },
+        "nickname": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "wechatId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
         "visibility": {
           "type": "object",
           "additionalProperties": true,

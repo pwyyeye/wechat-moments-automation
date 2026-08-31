@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 import httpx
@@ -58,6 +59,9 @@ def test_standard_http_routes_headers_and_empty_claim():
             )
         if request.url.path.endswith("/agents/heartbeat"):
             assert request.headers["idempotency-key"]
+            body = json.loads(request.content)
+            assert body["wechat"]["nickname"] == "番石榴"
+            assert body["wechat"]["wechatId"] == "higuava001"
             return httpx.Response(
                 200,
                 json={
@@ -80,6 +84,8 @@ def test_standard_http_routes_headers_and_empty_claim():
             loggedIn=True,
             momentsWindowReady=True,
             wechatVersion="4.1.13.12",
+            wechatNickname="番石榴",
+            wechatId="higuava001",
             interactiveSession=True,
             desktopUnlocked=True,
         )
