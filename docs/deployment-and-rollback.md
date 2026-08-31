@@ -23,16 +23,16 @@ Use `packaging/agent-bootstrap.example.json` as the schema template.
 
 Without a bootstrap bundle, the default source is created as `unconfigured`.
 This is intentional: the Agent never invents a random Bearer token. Enter a
-valid key in the loopback admin page before enabling production polling.
+valid key in the native Windows control panel before enabling production polling.
 
-The uninstaller removes the executable and login task but preserves the data directory. Check the local admin page and make sure the Outbox backlog is zero before intentionally deleting that directory.
+The uninstaller removes the executable and login task but preserves the data directory. Check the native control panel and make sure the Outbox backlog is zero before intentionally deleting that directory.
 
 ## Upgrade
 
 1. Confirm the local Outbox backlog is zero or the source credentials remain available.
 2. Keep the entire `%LOCALAPPDATA%\WechatPublisherAgent` directory.
 3. Install the newer onedir build over the prior version.
-4. Open `http://127.0.0.1:17821`, verify Agent and WeChat versions, then test each source.
+4. Open **Wechat Publisher Agent** from the Start menu, verify Agent and WeChat versions, then test each source.
 5. Run the no-click environment preflight before allowing a production task.
 
 Protocol v1 permits additive optional fields. An Agent must reject an unknown required protocol version but ignore unknown optional fields.
@@ -42,10 +42,15 @@ Protocol v1 permits additive optional fields. An Agent must reject an unknown re
 Agent 0.3.4 and later distinguish a real claimed publish task from local
 preflight or WeChat identity recognition. A claimed publish task blocks safe
 shutdown so the final-click ledger cannot be interrupted. Local recognition
-and preflight do not block shutdown. The loopback page immediately stops new
-polling, asks Uvicorn to drain, and uses an eight-second watchdog to terminate
+and preflight do not block shutdown. The native control panel immediately stops
+new polling, asks Uvicorn to drain, and uses an eight-second watchdog to terminate
 the process if a native OCR/UIA call cannot return. The watchdog does not stop
 or log out WeChat and does not delete the local ledger or DPAPI credentials.
+
+Agent 0.4.0 and later use a native Windows GUI for all operator actions. The
+loopback HTTP endpoint remains bound to `127.0.0.1` for internal GUI-to-Agent
+communication and diagnostics only; normal startup never opens a browser or
+embeds a web view.
 
 ## Rollback
 

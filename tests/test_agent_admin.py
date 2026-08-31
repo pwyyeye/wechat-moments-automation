@@ -128,7 +128,7 @@ def test_run_forever_does_not_require_console_logging(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "stop", lambda: None)
     monkeypatch.setattr("src.agent.app.uvicorn.Server", FakeServer)
 
-    app.run_forever(open_browser=False)
+    app.run_forever()
 
     assert captured["config"].log_config is None
     assert captured["config"].access_log is False

@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $resolvedExecutable = (Resolve-Path -LiteralPath $ExecutablePath).Path
 $action = New-ScheduledTaskAction `
     -Execute $resolvedExecutable `
-    -Argument "--agent --agent-no-browser" `
+    -Argument "--agent" `
     -WorkingDirectory (Split-Path -Parent $resolvedExecutable)
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet `

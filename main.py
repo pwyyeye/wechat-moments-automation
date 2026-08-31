@@ -31,6 +31,7 @@ import sys
 import argparse
 import signal
 import json
+import subprocess
 import time
 import win32gui
 from pathlib import Path
@@ -175,11 +176,12 @@ def parse_args():
     )
     parser.add_argument('--resume', action='store_true', help='从上次中断恢复')
     parser.add_argument('--agent', action='store_true', help='启动多数据源 Windows Agent')
+    parser.add_argument('--agent-ui', action='store_true', help='打开 Windows Agent 原生桌面控制台')
     parser.add_argument('--agent-config', type=str, help='Agent config.yaml 路径')
     parser.add_argument(
         '--agent-no-browser',
         action='store_true',
-        help='启动 Agent 时不自动打开本地管理页',
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args()
 
@@ -449,11 +451,36 @@ def main():
     if args.verify_ocr_runtime:
         return verify_ocr_runtime()
 
+    if args.agent_ui:
+        from src.agent.admin.gui import LocalAgentClient, run_native_admin
+        from src.agent.config import load_config
+
+        config, _ = load_config(args.agent_config)
+        base_url = (
+            f"http://{config.runtime.local_admin_host}:"
+            f"{config.runtime.local_admin_port}"
+        )
+        client = LocalAgentClient(base_url)
+        if not client.wait_until_ready(0.5):
+            if getattr(sys, "frozen", False):
+                command = [sys.executable, "--agent"]
+                working_directory = str(Path(sys.executable).parent)
+            else:
+                command = [sys.executable, str(Path(__file__).resolve()), "--agent"]
+                working_directory = str(Path(__file__).resolve().parent)
+            subprocess.Popen(
+                command,
+                cwd=working_directory,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                close_fds=True,
+            )
+        return run_native_admin(base_url)
+
     if args.agent:
         from src.agent import PublisherAgentApp
 
         _agent_ref = PublisherAgentApp(config_path=args.agent_config)
-        _agent_ref.run_forever(open_browser=not args.agent_no_browser)
+        _agent_ref.run_forever()
         return 0
 
     # 纯空跑在创建发布器前结束，不加载 OCR，也不激活或操作微信窗口。

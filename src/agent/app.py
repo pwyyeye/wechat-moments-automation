@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import webbrowser
 from pathlib import Path
 
 import uvicorn
@@ -129,15 +128,13 @@ class PublisherAgentApp:
         self._heartbeat_thread.start()
         self._identity_thread.start()
 
-    def run_forever(self, *, open_browser: bool = True) -> None:
+    def run_forever(self) -> None:
         self.start_background()
         self._server_stopped.clear()
         url = (
             f"http://{self.config.runtime.local_admin_host}:"
             f"{self.config.runtime.local_admin_port}"
         )
-        if open_browser:
-            threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         logger.info("starting local admin url=%s", url)
         try:
             config = uvicorn.Config(
@@ -242,7 +239,7 @@ class PublisherAgentApp:
                 "id": self.config.agent.id,
                 "displayName": self.config.agent.display_name,
                 "accountKey": self.config.agent.account_key,
-                "version": "0.3.4",
+                "version": "0.4.0",
             },
             "wechat": wechat_status,
             "worker": {

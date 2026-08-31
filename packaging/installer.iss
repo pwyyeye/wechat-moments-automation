@@ -1,5 +1,5 @@
 #define AppName "Wechat Publisher Agent"
-#define AppVersion "0.3.4"
+#define AppVersion "0.4.0"
 #define AppExeName "WechatPublisherAgent.exe"
 
 [Setup]
@@ -29,18 +29,19 @@ Source: "..\scripts\verify-installed-agent.ps1"; DestDir: "{app}\tools"; Flags: 
 Source: "{src}\agent-bootstrap.json"; DestDir: "{localappdata}\WechatPublisherAgent"; DestName: "bootstrap.json"; Flags: external skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\Wechat Publisher Agent"; Filename: "{app}\{#AppExeName}"; Parameters: "--agent"
-Name: "{autodesktop}\Wechat Publisher Agent"; Filename: "{app}\{#AppExeName}"; Parameters: "--agent"; Tasks: desktopicon
+Name: "{group}\Wechat Publisher Agent"; Filename: "{app}\{#AppExeName}"; Parameters: "--agent-ui"
+Name: "{autodesktop}\Wechat Publisher Agent"; Filename: "{app}\{#AppExeName}"; Parameters: "--agent-ui"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\install-startup.ps1"" -ExecutablePath ""{app}\{#AppExeName}"""; Flags: runhidden waituntilterminated; StatusMsg: "Registering user logon startup..."
-Filename: "{app}\{#AppExeName}"; Parameters: "--agent"; Description: "Open local configuration"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Parameters: "--agent"; Flags: nowait runhidden postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Parameters: "--agent-ui"; Description: "Open Windows Agent control panel"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\remove-startup.ps1"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveStartupTask"
 
 [Messages]
-FinishedLabel=Installation is complete. The Agent runs only after user logon and opens a loopback-only configuration page. Local task ledger and credentials are kept in %LOCALAPPDATA%\WechatPublisherAgent during uninstall so pending result events are not lost.
+FinishedLabel=Installation is complete. The Agent runs in the signed-in user session and is managed from a native Windows control panel. Local task ledger and credentials are kept in %LOCALAPPDATA%\WechatPublisherAgent during uninstall so pending result events are not lost.
