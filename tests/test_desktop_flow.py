@@ -73,3 +73,30 @@ def test_login_fallback_scans_only_the_main_window() -> None:
     operator.router.ocr.scan_screen.assert_called_once_with(
         region=(1000, 400, 600, 400)
     )
+
+
+def test_login_accepts_visible_desktop_moments_when_uia_tree_is_unavailable(
+    monkeypatch,
+) -> None:
+    operator = Operator.__new__(Operator)
+    operator._uia = Mock()
+    operator._uia.available = True
+    operator._uia.check_login.return_value = {
+        "isLoggedIn": False,
+        "detectedPage": "检测失败",
+        "navLabels": [],
+    }
+    operator._moments_hwnd = 123
+    operator.find_moments_window = Mock(return_value=True)
+    monkeypatch.setattr(
+        "src.executor.operator.win32gui.GetWindowRect",
+        Mock(return_value=(1000, 400, 1600, 1200)),
+    )
+
+    result = operator.check_login_state()
+
+    assert result == {
+        "logged_in": True,
+        "page": "朋友圈",
+        "details": "独立朋友圈窗口已就绪",
+    }

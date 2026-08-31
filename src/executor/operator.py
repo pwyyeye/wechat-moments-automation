@@ -580,6 +580,18 @@ class Operator:
                     'page': result.get('detectedPage', '微信主界面'),
                     'details': f"导航标签: {result.get('navLabels', [])}",
                 }
+            # WeChat 4.x may expose no usable UIA navigation tree while its
+            # authenticated Moments window remains visible and interactive.
+            if self.find_moments_window():
+                left, top, right, bottom = win32gui.GetWindowRect(
+                    self._moments_hwnd
+                )
+                if right - left >= 300 and bottom - top >= 300:
+                    return {
+                        'logged_in': True,
+                        'page': '朋友圈',
+                        'details': '独立朋友圈窗口已就绪',
+                    }
             elif result.get('detectedPage') == '微信未运行':
                 return {
                     'logged_in': False,
