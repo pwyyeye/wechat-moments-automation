@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from .config import SourceConfig
+from .credential_store import CredentialStore
 from .models import MediaItem, PublisherTask
 
 
@@ -51,6 +52,7 @@ class MediaCache:
         *,
         client: httpx.Client | None = None,
         address_resolver: Callable[[str], list[str]] = resolve_host,
+        credential_store: CredentialStore | None = None,
     ):
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
@@ -60,6 +62,7 @@ class MediaCache:
             follow_redirects=False,
         )
         self.address_resolver = address_resolver
+        self.credential_store = credential_store
 
     def download_task(self, source: SourceConfig, task: PublisherTask) -> list[str]:
         if sum(item.size_bytes for item in task.content.media) > 60 * 1024 * 1024:
@@ -91,7 +94,11 @@ class MediaCache:
         for _ in range(4):
             self._validate_url(source, current_url)
             try:
-                request = self.client.build_request("GET", current_url)
+                request = self.client.build_request(
+                    "GET",
+                    current_url,
+                    headers=self._source_auth_headers(source, current_url),
+                )
                 response = self.client.send(request, stream=True)
             except httpx.HTTPError as error:
                 raise MediaDownloadError(
@@ -221,6 +228,26 @@ class MediaCache:
                 f"Media host {hostname} resolves to a private or reserved address.",
                 retryable=False,
             )
+
+    def _source_auth_headers(self, source: SourceConfig, value: str) -> dict[str, str]:
+        if self.credential_store is None:
+            return {}
+        source_host = urlparse(str(source.base_url)).hostname
+        media_host = urlparse(value).hostname
+        # Never forward a source credential to an allowlisted redirect host.
+        if not source_host or not media_host or source_host.lower() != media_host.lower():
+            return {}
+        try:
+            secret = self.credential_store.get(source.auth.credential_ref)
+        except Exception as error:
+            raise MediaDownloadError(
+                "MEDIA_DOWNLOAD_AUTH_FAILED",
+                "The source credential is unavailable for authenticated media download.",
+                retryable=False,
+            ) from error
+        if source.auth.type == "bearer":
+            return {"Authorization": f"Bearer {secret}"}
+        return {source.auth.header_name or "X-Api-Key": secret}
 
     def cleanup_task(self, source_id: str, task_id: str) -> None:
         task_root = (self.root / source_id / task_id).resolve()

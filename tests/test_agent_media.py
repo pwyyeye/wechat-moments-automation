@@ -6,22 +6,25 @@ import httpx
 import pytest
 
 from src.agent.config import SourceConfig
+from src.agent.credential_store import InMemoryCredentialStore
 from src.agent.media_cache import MediaCache, MediaDownloadError
 from src.agent.models import PublisherTask
 
 
-def source(*, allowed_hosts=None, allow_private=False):
+def source(*, allowed_hosts=None, allow_private=False, auth_type="api_key_header"):
+    auth = {
+        "type": auth_type,
+        "credentialRef": "dpapi://source-a",
+    }
+    if auth_type == "api_key_header":
+        auth["headerName"] = "x-api-key"
     return SourceConfig.model_validate(
         {
             "id": "source-a",
             "name": "Source A",
             "baseUrl": "https://source.example.test/openapi/publisher-agent/v1",
             "accountKey": "wechat-main",
-            "auth": {
-                "type": "api_key_header",
-                "headerName": "x-api-key",
-                "credentialRef": "dpapi://source-a",
-            },
+            "auth": auth,
             "mediaSecurity": {
                 "allowedHosts": allowed_hosts or ["media.example.test"],
                 "allowPrivateNetwork": allow_private,
@@ -70,12 +73,19 @@ def task(content=b"image", **media_overrides):
     )
 
 
-def cache(tmp_path, handler, *, resolver=lambda host: ["93.184.216.34"]):
+def cache(
+    tmp_path,
+    handler,
+    *,
+    resolver=lambda host: ["93.184.216.34"],
+    credential_store=None,
+):
     return MediaCache(
         tmp_path,
         64,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
         address_resolver=resolver,
+        credential_store=credential_store,
     )
 
 
@@ -133,3 +143,60 @@ def test_media_host_and_private_address_are_blocked(tmp_path):
             task(),
         )
     assert error.value.code == "MEDIA_HOST_NOT_ALLOWED"
+
+
+def test_media_download_authenticates_source_host_without_leaking_on_redirect(tmp_path):
+    content = b"authenticated-image"
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.host == "source.example.test":
+            return httpx.Response(
+                302,
+                headers={"Location": "https://media.example.test/test.jpg"},
+            )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "image/jpeg"},
+            content=content,
+        )
+
+    credentials = InMemoryCredentialStore()
+    credentials.set("dpapi://source-a", "source-secret")
+    media_cache = cache(tmp_path, handler, credential_store=credentials)
+    media_task = task(
+        content,
+        downloadUrl="https://source.example.test/openapi/publisher-agent/v1/media/media-1",
+    )
+
+    media_cache.download_task(source(), media_task)
+
+    assert requests[0].headers["x-api-key"] == "source-secret"
+    assert "x-api-key" not in requests[1].headers
+
+
+def test_media_download_uses_bearer_auth_for_source_host(tmp_path):
+    content = b"bearer-image"
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "image/jpeg"},
+            content=content,
+        )
+
+    credentials = InMemoryCredentialStore()
+    credentials.set("dpapi://source-a", "bearer-secret")
+    media_cache = cache(tmp_path, handler, credential_store=credentials)
+    media_cache.download_task(
+        source(auth_type="bearer"),
+        task(
+            content,
+            downloadUrl="https://source.example.test/openapi/publisher-agent/v1/media/media-1",
+        ),
+    )
+
+    assert requests[0].headers["authorization"] == "Bearer bearer-secret"

@@ -57,6 +57,7 @@ class PublisherAgentApp:
         self.media_cache = MediaCache(
             self.data_root / "cache" / "media",
             self.config.runtime.media_cache_max_mib,
+            credential_store=self.credential_store,
         )
         self.outbox = OutboxDispatcher(self.ledger, self.source_manager)
         self.worker = PublisherWorker(
