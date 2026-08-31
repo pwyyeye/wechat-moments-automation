@@ -420,9 +420,12 @@ class EventDrivenPublisher:
 
         for attempt in range(1, max_retries + 1):
             self.operator.activate_main_window()
-            # 点击
-            self.operator.click_by_uia(name="朋友圈")
-            if not self.operator.click_element(MOMENTS_ELEMENTS['nav_moments']):
+            # The UIA command supports both a direct Moments tab and the
+            # Discover -> Moments layout. OCR remains the legacy fallback.
+            opened = self.operator.open_moments_navigation()
+            if not opened:
+                self.operator.click_by_uia(name="朋友圈")
+            if not opened and not self.operator.click_element(MOMENTS_ELEMENTS['nav_moments']):
                 self.operator.click_by_uia(name="朋友圈")
 
             # 等待事件：朋友圈页面加载完成的标志

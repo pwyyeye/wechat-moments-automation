@@ -13,7 +13,7 @@ def test_native_gui_client_reads_loopback_status_without_browser(monkeypatch):
         captured.update(method=method, url=url, kwargs=kwargs)
         return httpx.Response(
             200,
-            json={"agent": {"version": "0.4.1"}, "sources": []},
+            json={"agent": {"version": "0.4.2"}, "sources": []},
             request=httpx.Request(method, url),
         )
 
@@ -22,7 +22,7 @@ def test_native_gui_client_reads_loopback_status_without_browser(monkeypatch):
 
     status = client.status()
 
-    assert status["agent"]["version"] == "0.4.1"
+    assert status["agent"]["version"] == "0.4.2"
     assert captured["method"] == "GET"
     assert captured["url"] == "http://127.0.0.1:17821/api/status"
     assert captured["kwargs"]["headers"]["X-Local-Agent-Action"] == "confirmed"

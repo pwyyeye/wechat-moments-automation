@@ -35,6 +35,8 @@ logs/
 templates/icons/*.png
 templates/icons/*.ico
 !templates/icons/moments_tab.png
+!templates/icons/discover_tab.png
+!templates/icons/moments_discover_item.png
 
 # Debug screenshots
 debug_screenshots/

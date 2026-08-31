@@ -4,6 +4,7 @@ import ctypes
 import logging
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -12,18 +13,37 @@ from .models import AgentSnapshot
 logger = logging.getLogger(__name__)
 
 
+def _get_window_text(hwnd: int) -> str:
+    """Read a title through the Unicode API even on legacy system code pages."""
+    try:
+        buffer = ctypes.create_unicode_buffer(512)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buffer, len(buffer))
+        return buffer.value
+    except Exception:
+        return ""
+
+
 def _moments_window_ready() -> bool:
     try:
         import win32gui
+        import win32process
 
-        windows: list[tuple[int, str]] = []
+        from src.executor.wechat_discovery import WECHAT_PROCESS_NAMES, _get_process_name
+
+        windows: list[int] = []
         win32gui.EnumWindows(
-            lambda hwnd, result: result.append((hwnd, win32gui.GetWindowText(hwnd)))
+            lambda hwnd, result: result.append(hwnd)
             if win32gui.IsWindowVisible(hwnd)
             else None,
             windows,
         )
-        return any(title == "朋友圈" for _, title in windows)
+        for hwnd in windows:
+            if _get_window_text(hwnd) != "朋友圈":
+                continue
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if _get_process_name(pid) in WECHAT_PROCESS_NAMES:
+                return True
+        return False
     except Exception:
         return False
 
@@ -41,7 +61,7 @@ def _locate_moments_icon(
     template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
 
     best: tuple[float, tuple[int, int], int, int, Any] | None = None
-    for scale in (0.75, 0.85, 1.0, 1.15, 1.25, 1.5, 1.75, 2.0):
+    for scale in (0.3, 0.4, 0.5, 0.6, 0.75, 0.85, 1.0, 1.15, 1.25, 1.5, 1.75, 2.0):
         width = max(12, int(template_gray.shape[1] * scale))
         height = max(12, int(template_gray.shape[0] * scale))
         if width >= screen_gray.shape[1] or height >= screen_gray.shape[0]:
@@ -69,8 +89,26 @@ def _locate_moments_icon(
     return left + width // 2, top + height // 2, float(score)
 
 
+@contextmanager
+def _per_monitor_dpi_context():
+    """Keep screenshot pixels and cursor coordinates aligned on scaled displays."""
+    previous = None
+    try:
+        previous = ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        if previous:
+            try:
+                ctypes.windll.user32.SetThreadDpiAwarenessContext(previous)
+            except Exception:
+                pass
+
+
 def _open_moments_by_template() -> bool:
-    """Click only a high-confidence Moments icon in the left navigation area."""
+    """Open Moments visually through a direct tab or Discover -> Moments."""
     import cv2
     import numpy as np
     import win32api
@@ -107,30 +145,102 @@ def _open_moments_by_template() -> bool:
         win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,
     )
 
-    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-    if right - left < 300 or bottom - top < 300:
+    templates_dir = Path(__file__).resolve().parents[2] / "templates" / "icons"
+    moments_path = templates_dir / "moments_tab.png"
+    nested_moments_path = templates_dir / "moments_discover_item.png"
+    discover_path = templates_dir / "discover_tab.png"
+    moments_template = cv2.imread(str(moments_path))
+    nested_moments_template = cv2.imread(str(nested_moments_path))
+    discover_template = cv2.imread(str(discover_path))
+    if (
+        moments_template is None
+        or nested_moments_template is None
+        or discover_template is None
+    ):
+        logger.error(
+            "微信导航图标模板缺失: %s / %s / %s",
+            moments_path,
+            nested_moments_path,
+            discover_path,
+        )
         return False
-    screenshot = np.array(ImageGrab.grab(bbox=(left, top, right, bottom)))
-    screenshot = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
-    nav_region = screenshot[:int(screenshot.shape[0] * 0.82), :int(screenshot.shape[1] * 0.25)]
 
-    template_path = Path(__file__).resolve().parents[2] / "templates" / "icons" / "moments_tab.png"
-    template = cv2.imread(str(template_path))
-    if template is None:
-        logger.error("朋友圈图标模板缺失: %s", template_path)
-        return False
-    match = _locate_moments_icon(nav_region, template)
-    if match is None:
-        logger.error("未找到高置信度朋友圈图标，拒绝点击")
-        return False
+    def click_match(left: int, top: int, match: tuple[int, int, float]) -> None:
+        x, y, _ = match
+        win32api.SetCursorPos((left + x, top + y))
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.08)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
-    x, y, score = match
-    win32api.SetCursorPos((left + x, top + y))
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.08)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-    logger.info("已点击受约束朋友圈图标，匹配置信度 %.3f", score)
-    return True
+    with _per_monitor_dpi_context():
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        if right - left < 300 or bottom - top < 300:
+            return False
+
+        def capture() -> Any:
+            image = np.array(
+                ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
+            )
+            return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+        screenshot = capture()
+        rail = screenshot[
+            :int(screenshot.shape[0] * 0.82),
+            :max(80, int(screenshot.shape[1] * 0.12)),
+        ]
+        direct_match = _locate_moments_icon(rail, moments_template)
+        if direct_match is not None:
+            click_match(left, top, direct_match)
+            logger.info("已通过直接入口打开朋友圈，匹配置信度 %.3f", direct_match[2])
+            return True
+
+        initial_panel = screenshot[
+            :int(screenshot.shape[0] * 0.48),
+            :max(180, int(screenshot.shape[1] * 0.32)),
+        ]
+        nested_match = _locate_moments_icon(
+            initial_panel,
+            nested_moments_template,
+        )
+        if nested_match is not None:
+            click_match(left, top, nested_match)
+            logger.info(
+                "已从当前发现页打开朋友圈，匹配置信度 %.3f",
+                nested_match[2],
+            )
+            return True
+
+        discover_match = _locate_moments_icon(rail, discover_template)
+        if discover_match is None:
+            logger.error("未找到高置信度的朋友圈或发现图标，拒绝点击")
+            return False
+        click_match(left, top, discover_match)
+        logger.info("已打开微信发现页，匹配置信度 %.3f", discover_match[2])
+
+        # The submenu is rendered asynchronously and may shift with DPI or
+        # window size, so locate its semantic icon instead of using a point.
+        for _ in range(8):
+            time.sleep(0.25)
+            screenshot = capture()
+            discover_panel = screenshot[
+                :int(screenshot.shape[0] * 0.48),
+                :max(180, int(screenshot.shape[1] * 0.32)),
+            ]
+            nested_match = _locate_moments_icon(
+                discover_panel,
+                nested_moments_template,
+            )
+            if nested_match is None:
+                continue
+            click_match(left, top, nested_match)
+            logger.info(
+                "已通过发现页打开朋友圈，匹配置信度 %.3f",
+                nested_match[2],
+            )
+            return True
+
+    logger.error("发现页已打开，但未找到高置信度朋友圈图标")
+    return False
 
 
 def _wait_for_moments_window(timeout: float) -> bool:

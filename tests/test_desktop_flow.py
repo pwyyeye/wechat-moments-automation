@@ -83,6 +83,30 @@ def test_editor_body_click_uses_safe_compose_position() -> None:
     operator.sim.click_at.assert_called_once_with(1210, 576)
 
 
+def test_open_moments_navigation_uses_semantic_uia_command() -> None:
+    operator = Operator.__new__(Operator)
+    operator._uia = Mock()
+    operator._uia.available = True
+    operator._uia.open_moments.return_value = True
+
+    assert operator.open_moments_navigation(timeout=4.0)
+    operator._uia.open_moments.assert_called_once_with(timeout=4.0)
+
+
+def test_enter_moments_falls_back_when_uia_navigation_is_unavailable() -> None:
+    operator = Operator.__new__(Operator)
+    operator.open_moments_navigation = Mock(return_value=False)
+    operator.click_element = Mock(return_value=True)
+    nav_element = Mock()
+    verify_element = Mock()
+
+    assert operator.enter_moments(nav_element, verify_element)
+    operator.click_element.assert_called_once_with(
+        nav_element,
+        verify_element=verify_element,
+    )
+
+
 def test_populated_editor_text_is_replaced_via_safe_body_focus(
     monkeypatch,
 ) -> None:
@@ -127,7 +151,7 @@ def test_moments_window_can_belong_to_a_separate_weixin_process(
         lambda hwnd: True,
     )
     monkeypatch.setattr(
-        "src.executor.operator.win32gui.GetWindowText",
+        "src.executor.operator._get_window_text",
         lambda hwnd: "朋友圈",
     )
     monkeypatch.setattr(

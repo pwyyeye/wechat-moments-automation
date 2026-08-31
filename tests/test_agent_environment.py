@@ -1,9 +1,14 @@
+from pathlib import Path
 from unittest.mock import patch
 
 import cv2
 import numpy as np
 
-from src.agent.environment import _locate_moments_icon, prepare_moments_window
+from src.agent.environment import (
+    _locate_moments_icon,
+    _moments_window_ready,
+    prepare_moments_window,
+)
 
 
 def test_locate_moments_icon_accepts_unique_scaled_match() -> None:
@@ -27,6 +32,31 @@ def test_locate_moments_icon_rejects_low_confidence_screen() -> None:
     template = np.full((40, 40, 3), 255, dtype=np.uint8)
 
     assert _locate_moments_icon(screen, template) is None
+
+
+def test_bundled_direct_and_discover_navigation_templates_are_loadable() -> None:
+    icons = Path(__file__).parents[1] / "templates" / "icons"
+
+    assert cv2.imread(str(icons / "moments_tab.png")) is not None
+    assert cv2.imread(str(icons / "discover_tab.png")) is not None
+    assert cv2.imread(str(icons / "moments_discover_item.png")) is not None
+
+
+def test_moments_window_ready_uses_unicode_title_and_wechat_process() -> None:
+    def enum_windows(callback, result) -> None:
+        callback(123, result)
+
+    with (
+        patch("win32gui.EnumWindows", side_effect=enum_windows),
+        patch("win32gui.IsWindowVisible", return_value=True),
+        patch("win32process.GetWindowThreadProcessId", return_value=(1, 456)),
+        patch("src.agent.environment._get_window_text", return_value="朋友圈"),
+        patch(
+            "src.executor.wechat_discovery._get_process_name",
+            return_value="Weixin.exe",
+        ),
+    ):
+        assert _moments_window_ready()
 
 
 def test_prepare_moments_window_uses_safe_template_fallback() -> None:

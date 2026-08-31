@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 def create_admin_app(agent: "PublisherAgentApp") -> FastAPI:
     app = FastAPI(
         title="WeChat Publisher Agent Local Admin",
-        version="0.4.1",
+        version="0.4.2",
         docs_url="/api/docs",
         redoc_url=None,
     )

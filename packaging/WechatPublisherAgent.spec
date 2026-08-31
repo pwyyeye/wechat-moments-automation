@@ -13,10 +13,21 @@ from PyInstaller.utils.hooks import (
 ROOT = Path(SPECPATH).parent
 datas = []
 binaries = []
-for relative in ("config", "templates", "src/cs_uia_service/publish"):
+for relative in ("config", "src/cs_uia_service/publish"):
     path = ROOT / relative
     if path.exists():
         datas.append((str(path), relative.replace("/", "\\")))
+
+# Runtime calibration may create private screenshots under templates/icons.
+# Ship only reviewed navigation assets in the installer.
+for filename in (
+    "moments_tab.png",
+    "discover_tab.png",
+    "moments_discover_item.png",
+):
+    path = ROOT / "templates" / "icons" / filename
+    if path.exists():
+        datas.append((str(path), "templates\\icons"))
 
 hiddenimports = collect_submodules("paddleocr")
 try:

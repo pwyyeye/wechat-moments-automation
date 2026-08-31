@@ -423,7 +423,7 @@ namespace WeChatUIA
 
                 var walker = TreeWalker.ControlViewWalker;
                 var navLabels = new List<string>();
-                var targets = new[] { "聊天", "通讯录", "朋友圈", "视频号" };
+                var targets = new[] { "聊天", "通讯录", "发现", "朋友圈", "视频号" };
 
                 CollectNavLabels(root, walker, navLabels, targets, 0);
 
@@ -504,27 +504,93 @@ namespace WeChatUIA
             var root = AutomationElement.FromHandle(hwnd);
             Thread.Sleep(500);
 
-            var condition = new PropertyCondition(AutomationElement.NameProperty, "朋友圈");
-            var element = root.FindFirst(TreeScope.Descendants, condition);
-            if (element == null)
+            // Some desktop layouts expose Moments as a main navigation item,
+            // while others nest it under Discover. Choose from visible controls
+            // at runtime instead of coupling navigation to a WeChat version.
+            var moments = FindActionableElement(root, "朋友圈");
+            if (moments != null && TryInvoke(moments, out var directMethod))
             {
-                Thread.Sleep(500);
-                element = root.FindFirst(TreeScope.Descendants, condition);
-            }
-            if (element == null)
-            {
-                Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "moments-control-not-found" }, _jsonOpts));
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    method = $"direct/{directMethod}",
+                    path = "direct",
+                }, _jsonOpts));
                 return 0;
             }
 
-            if (TryInvoke(element, out var method))
+            var discover = FindActionableElement(root, "发现");
+            if (discover == null)
             {
-                Console.WriteLine(JsonSerializer.Serialize(new { success = true, method }, _jsonOpts));
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    reason = moments == null
+                        ? "moments-and-discover-controls-not-found"
+                        : "moments-control-not-invokable",
+                }, _jsonOpts));
                 return 0;
             }
 
-            Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "moments-control-not-invokable" }, _jsonOpts));
+            if (!TryInvoke(discover, out var discoverMethod))
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    reason = "discover-control-not-invokable",
+                }, _jsonOpts));
+                return 0;
+            }
+
+            // Discover content is loaded asynchronously. Re-read the root on
+            // each pass because Qt may replace the provider subtree entirely.
+            for (var attempt = 0; attempt < 12; attempt++)
+            {
+                Thread.Sleep(attempt == 0 ? 500 : 250);
+                root = AutomationElement.FromHandle(hwnd);
+                moments = FindActionableElement(root, "朋友圈");
+                if (moments == null || !TryInvoke(moments, out var nestedMethod))
+                    continue;
+
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    method = $"discover/{discoverMethod}/{nestedMethod}",
+                    path = "discover",
+                }, _jsonOpts));
+                return 0;
+            }
+
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                success = false,
+                reason = "moments-control-not-found-after-discover",
+            }, _jsonOpts));
             return 0;
+        }
+
+        static AutomationElement? FindActionableElement(AutomationElement root, string name)
+        {
+            try
+            {
+                var condition = new PropertyCondition(AutomationElement.NameProperty, name);
+                var candidates = root.FindAll(TreeScope.Descendants, condition);
+                foreach (AutomationElement candidate in candidates)
+                {
+                    try
+                    {
+                        var rect = candidate.Current.BoundingRectangle;
+                        if (candidate.Current.IsEnabled && !candidate.Current.IsOffscreen &&
+                            rect.Width >= 2 && rect.Height >= 2)
+                        {
+                            return candidate;
+                        }
+                    }
+                    catch (ElementNotAvailableException) { }
+                }
+            }
+            catch (ElementNotAvailableException) { }
+            return null;
         }
 
         static bool TryInvoke(AutomationElement element, out string method)

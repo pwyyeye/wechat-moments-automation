@@ -10,6 +10,7 @@
 Author: 版本无关微信自动化系统
 """
 
+import ctypes
 import time
 import logging
 import random
@@ -27,6 +28,13 @@ from .human_sim import HumanSimulator
 from .uia_bridge import UIABridge
 
 logger = logging.getLogger(__name__)
+
+
+def _get_window_text(hwnd: int) -> str:
+    """Read window text through the Unicode API on every Windows locale."""
+    buffer = ctypes.create_unicode_buffer(512)
+    ctypes.windll.user32.GetWindowTextW(hwnd, buffer, len(buffer))
+    return buffer.value
 
 
 class Operator:
@@ -84,7 +92,7 @@ class Operator:
         def callback(hwnd, _):
             if not win32gui.IsWindowVisible(hwnd):
                 return
-            if win32gui.GetWindowText(hwnd) != '朋友圈':
+            if _get_window_text(hwnd) != '朋友圈':
                 return
             _, pid = win32process.GetWindowThreadProcessId(hwnd)
             if _get_process_name(pid) not in WECHAT_PROCESS_NAMES:
@@ -373,7 +381,15 @@ class Operator:
     def enter_moments(self, nav_element: ElementDescriptor,
                       verify_element: ElementDescriptor) -> bool:
         """进入朋友圈页面"""
+        if self.open_moments_navigation():
+            return True
         return self.click_element(nav_element, verify_element=verify_element)
+
+    def open_moments_navigation(self, timeout: float = 8.0) -> bool:
+        """Open Moments through either the direct or Discover navigation path."""
+        if self._uia is None or not self._uia.available:
+            return False
+        return self._uia.open_moments(timeout=timeout)
 
     # ══════════════════════════════════════════════════════════
     # 应急操作
