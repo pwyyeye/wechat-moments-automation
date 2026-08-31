@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 
 ROOT = Path(SPECPATH).parent
@@ -21,6 +21,11 @@ try:
     hiddenimports += package_hidden
 except Exception:
     pass
+
+# PaddleOCR 3.x loads its pipeline definitions from PaddleX package data at
+# runtime. PyInstaller follows the Python imports but does not collect these
+# YAML files automatically, so the packaged OCR engine cannot find "OCR".
+datas += collect_data_files("paddlex", includes=["configs/**"])
 
 a = Analysis(
     [str(ROOT / "main.py")],
