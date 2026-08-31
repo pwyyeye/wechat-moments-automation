@@ -119,6 +119,7 @@ def test_login_accepts_visible_desktop_moments_when_uia_tree_is_unavailable(
     }
     operator._moments_hwnd = 123
     operator.find_moments_window = Mock(return_value=True)
+    operator.activate_moments_window = Mock(return_value=True)
     monkeypatch.setattr(
         "src.executor.operator.win32gui.GetWindowRect",
         Mock(return_value=(1000, 400, 1600, 1200)),

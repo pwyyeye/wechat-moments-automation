@@ -579,7 +579,10 @@ class Operator:
                 }
             # WeChat 4.x may expose no usable UIA navigation tree while its
             # authenticated Moments window remains visible and interactive.
-            if self.find_moments_window():
+            if (
+                self.find_moments_window()
+                and self.activate_moments_window()
+            ):
                 left, top, right, bottom = win32gui.GetWindowRect(
                     self._moments_hwnd
                 )
