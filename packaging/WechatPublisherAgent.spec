@@ -1,11 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_data_files,
+    collect_submodules,
+    copy_metadata,
+    get_package_paths,
+)
 
 
 ROOT = Path(SPECPATH).parent
 datas = []
+binaries = []
 for relative in ("config", "templates", "src/cs_uia_service/publish"):
     path = ROOT / relative
     if path.exists():
@@ -27,10 +34,30 @@ except Exception:
 # YAML files automatically, so the packaged OCR engine cannot find "OCR".
 datas += collect_data_files("paddlex", includes=["configs/**"])
 
+# PaddleX validates OCR extras with importlib.metadata before constructing the
+# pipeline. Preserve both the import modules and their distribution metadata.
+ocr_runtime_packages = {
+    "imagesize": "imagesize",
+    "opencv-contrib-python": None,
+    "pyclipper": "pyclipper",
+    "pypdfium2": "pypdfium2",
+    "python-bidi": "bidi",
+    "shapely": "shapely",
+}
+for distribution, module in ocr_runtime_packages.items():
+    datas += copy_metadata(distribution)
+    if module:
+        hiddenimports += collect_submodules(module)
+
+# The upstream Paddle PyInstaller hook omits this CPU inference dependency.
+# Without it the packaged predictor fails with Windows loader error 126.
+_, paddle_package = get_package_paths("paddle")
+binaries.append((str(Path(paddle_package) / "libs" / "mklml.dll"), "paddle/libs"))
+
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

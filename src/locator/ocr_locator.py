@@ -91,7 +91,7 @@ class PaddleOCREngine:
                     "如果安装失败，尝试: pip install paddlepaddle 后再 pip install paddleocr"
                 )
             except Exception as e:
-                logger.error(f"PaddleOCR 初始化失败: {e}")
+                logger.exception(f"PaddleOCR 初始化失败: {e}")
                 raise
         return self._ocr
 

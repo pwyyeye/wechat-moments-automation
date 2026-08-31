@@ -34,6 +34,19 @@ try {
     & $pythonPath -m PyInstaller --noconfirm --clean "packaging\WechatPublisherAgent.spec"
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed with exit code $LASTEXITCODE." }
 
+    $packagedAgent = Join-Path $repoRoot "dist\WechatPublisherAgent\WechatPublisherAgent.exe"
+    $ocrStdout = Join-Path $repoRoot "build\ocr-runtime.stdout.log"
+    $ocrStderr = Join-Path $repoRoot "build\ocr-runtime.stderr.log"
+    $ocrCheck = Start-Process -FilePath $packagedAgent -ArgumentList "--verify-ocr-runtime" -PassThru -WindowStyle Hidden -RedirectStandardOutput $ocrStdout -RedirectStandardError $ocrStderr
+    if (-not $ocrCheck.WaitForExit(120000)) {
+        Stop-Process -Id $ocrCheck.Id -Force
+        throw "Packaged OCR runtime check timed out."
+    }
+    if ($ocrCheck.ExitCode -ne 0) {
+        $ocrError = Get-Content -LiteralPath $ocrStderr -Raw -ErrorAction SilentlyContinue
+        throw "Packaged OCR runtime check failed with exit code $($ocrCheck.ExitCode).`n$ocrError"
+    }
+
     $compilerCandidates = @(
         (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
         (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),

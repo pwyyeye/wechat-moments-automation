@@ -160,6 +160,11 @@ def parse_args():
     parser.add_argument('--calibrate', action='store_true', help='手动触发界面校准')
     parser.add_argument('--extract-templates', action='store_true', help='提取/更新图标模板库')
     parser.add_argument('--test', action='store_true', help='运行自检（不操作微信）')
+    parser.add_argument(
+        '--verify-ocr-runtime',
+        action='store_true',
+        help='仅初始化打包版 OCR 运行时并返回退出码，不操作微信',
+    )
     parser.add_argument('--account', type=str, help='指定微信账号（多开时使用）')
     parser.add_argument('--accounts', action='store_true', help='列出所有检测到的微信窗口')
     parser.add_argument('--dry-run', action='store_true', help='空跑模式')
@@ -421,11 +426,28 @@ def run_self_test(publisher) -> int:
     return 1 if errors > 0 else 0
 
 
+def verify_ocr_runtime() -> int:
+    """Initialize PaddleOCR without inspecting or interacting with WeChat."""
+    try:
+        from src.locator.ocr_locator import PaddleOCREngine
+
+        engine = PaddleOCREngine()
+        engine.ocr
+        print("PaddleOCR runtime ready")
+        return 0
+    except Exception as exc:
+        print(f"PaddleOCR runtime failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def main():
     global _publisher_ref, _agent_ref
 
     configure_console_encoding()
     args = parse_args()
+
+    if args.verify_ocr_runtime:
+        return verify_ocr_runtime()
 
     if args.agent:
         from src.agent import PublisherAgentApp
