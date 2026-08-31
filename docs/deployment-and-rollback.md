@@ -13,6 +13,18 @@ Compile `packaging/installer.iss` with Inno Setup after the onedir build. The in
 - DPAPI-encrypted source credentials: `%LOCALAPPDATA%\WechatPublisherAgent\credentials`
 - Rotating logs: `%LOCALAPPDATA%\WechatPublisherAgent\logs`
 
+For unattended deployment, place a protected `agent-bootstrap.json` beside the
+setup EXE. The installer copies it to the data directory; the Agent validates
+the bundle, saves every source credential with current-user DPAPI, updates
+`config.yaml`, and removes the copied plaintext file. The original sidecar next
+to the installer remains the deployer's responsibility and must be distributed
+through a secret-capable channel and removed after deployment. Never commit it.
+Use `packaging/agent-bootstrap.example.json` as the schema template.
+
+Without a bootstrap bundle, the default source is created as `unconfigured`.
+This is intentional: the Agent never invents a random Bearer token. Enter a
+valid key in the loopback admin page before enabling production polling.
+
 The uninstaller removes the executable and login task but preserves the data directory. Check the local admin page and make sure the Outbox backlog is zero before intentionally deleting that directory.
 
 ## Upgrade
@@ -32,4 +44,8 @@ Protocol v1 permits additive optional fields. An Agent must reject an unknown re
 3. Do not restore an older copy of `agent.db`; use the current ledger so final-click intent and pending Outbox events are retained.
 4. Re-register startup and verify that any task found after `final_click_intent` enters manual review without another click.
 
-The compatibility floor for the first release is Windows 11 x64 and WeChat Desktop 4.1.13.12. Any new WeChat build must pass the no-click preflight and one explicitly authorized test post before broad rollout.
+The supported operating-system floor is Windows 10/11 x64. Window discovery is
+based on top-level windows and the running WeChat process rather than a fixed
+WeChat version number. UI changes can still affect controls and OCR, so every
+new WeChat build must pass the no-click preflight and one explicitly authorized
+test post before broad rollout.

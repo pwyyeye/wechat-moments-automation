@@ -42,9 +42,19 @@ try {
         Stop-Process -Id $ocrCheck.Id -Force
         throw "Packaged OCR runtime check timed out."
     }
-    if ($ocrCheck.ExitCode -ne 0) {
+    # PowerShell can leave ExitCode unset after the timed overload even though
+    # the process has exited. Complete the wait and refresh the process object.
+    $ocrCheck.WaitForExit()
+    $ocrCheck.Refresh()
+    $ocrExitCode = $ocrCheck.ExitCode
+    $ocrOutput = Get-Content -LiteralPath $ocrStdout -Raw -ErrorAction SilentlyContinue
+    $ocrReady = $ocrOutput -match "PaddleOCR runtime ready"
+    # Windows PowerShell 5 can return a null ExitCode for a GUI-subsystem
+    # PyInstaller executable even after WaitForExit. The explicit success
+    # marker is emitted only after both OCR models initialize successfully.
+    if (($null -ne $ocrExitCode -and $ocrExitCode -ne 0) -or -not $ocrReady) {
         $ocrError = Get-Content -LiteralPath $ocrStderr -Raw -ErrorAction SilentlyContinue
-        throw "Packaged OCR runtime check failed with exit code $($ocrCheck.ExitCode).`n$ocrError"
+        throw "Packaged OCR runtime check failed with exit code $ocrExitCode.`n$ocrError"
     }
 
     $compilerCandidates = @(

@@ -77,12 +77,13 @@ def _open_moments_by_template() -> bool:
     import win32con
     import win32gui
     from PIL import ImageGrab
-    from src.executor.wechat_discovery import _find_wechat_windows
+    from .wechat_identity import find_wechat_main_window, _try_activate_window
 
-    windows = _find_wechat_windows()
-    if not windows:
+    hwnd = find_wechat_main_window()
+    if hwnd is None:
         return False
-    hwnd = windows[0][0]
+    if not win32gui.IsWindowVisible(hwnd):
+        win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
     if win32gui.IsIconic(hwnd):
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
     win32gui.SetWindowPos(
@@ -94,7 +95,7 @@ def _open_moments_by_template() -> bool:
         0,
         win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,
     )
-    win32gui.SetForegroundWindow(hwnd)
+    _try_activate_window(hwnd)
     time.sleep(0.2)
     win32gui.SetWindowPos(
         hwnd,
@@ -143,6 +144,7 @@ def _wait_for_moments_window(timeout: float) -> bool:
 
 def prepare_moments_window(timeout: float = 10.0) -> bool:
     """Open the Moments list without initializing OCR or entering compose."""
+    deadline = time.monotonic() + max(1.0, timeout)
     if not is_interactive_session() or not is_desktop_unlocked():
         return False
     if _moments_window_ready():
@@ -151,13 +153,16 @@ def prepare_moments_window(timeout: float = 10.0) -> bool:
     from src.executor.uia_bridge import UIABridge
 
     bridge = UIABridge()
-    if bridge.available and bridge.open_moments():
-        if _wait_for_moments_window(min(timeout, 3.0)):
+    remaining = max(0.1, deadline - time.monotonic())
+    if bridge.available and bridge.open_moments(timeout=min(8.0, remaining)):
+        if _wait_for_moments_window(min(3.0, max(0.1, deadline - time.monotonic()))):
             return True
 
+    if time.monotonic() >= deadline:
+        return False
     if not _open_moments_by_template():
         return False
-    return _wait_for_moments_window(timeout)
+    return _wait_for_moments_window(max(0.1, deadline - time.monotonic()))
 
 
 def is_interactive_session() -> bool:
@@ -206,18 +211,18 @@ def probe_environment() -> AgentSnapshot:
         running = False
     if running:
         # The full publisher performs semantic login checks before execution.
-        # Heartbeats deliberately stay read-only and avoid activating windows.
+        # Status and heartbeat probes must never activate windows or initialize
+        # OCR. Identity detection runs independently and only exposes its cache.
         logged_in = True
-        if is_interactive_session() and is_desktop_unlocked():
-            try:
-                from .wechat_identity import get_wechat_identity
+        try:
+            from .wechat_identity import get_cached_wechat_identity
 
-                identity = get_wechat_identity()
-                if identity:
-                    nickname = identity.nickname
-                    wechat_id = identity.wechat_id
-            except Exception:
-                logger.exception("微信账号身份检测失败")
+            identity = get_cached_wechat_identity()
+            if identity:
+                nickname = identity.nickname
+                wechat_id = identity.wechat_id
+        except Exception:
+            logger.exception("读取微信账号身份缓存失败")
     try:
         from src.executor.version_detector import VersionDetector
 

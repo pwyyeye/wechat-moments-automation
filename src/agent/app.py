@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import secrets
 import threading
 import webbrowser
 from pathlib import Path
@@ -10,7 +9,7 @@ import uvicorn
 
 from .admin.schemas import SourceUpsertRequest
 from .admin.server import create_admin_app
-from .config import DEFAULT_SOURCE_ID, SourceConfig, load_config, save_config
+from .config import SourceConfig, load_config, save_config
 from .credential_store import DpapiCredentialStore, DpapiPayloadProtector
 from .executor import DesktopPublishExecutor, PublishExecutor
 from .ledger import AgentLedger
@@ -39,12 +38,13 @@ class PublisherAgentApp:
         self.data_root.mkdir(parents=True, exist_ok=True)
         self._configure_logging()
         self._config_lock = threading.RLock()
+        self._preflight_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.executor = executor or DesktopPublishExecutor()
         self.credential_store = credential_store or DpapiCredentialStore(
             self.data_root / "credentials"
         )
-        self._ensure_default_source_credential()
+        self._import_bootstrap_if_present()
         protector = payload_protector or DpapiPayloadProtector()
         self.ledger = AgentLedger(self.data_root / "data" / "agent.db", protector)
         source_kwargs = {}
@@ -72,26 +72,33 @@ class PublisherAgentApp:
         self.admin_app = create_admin_app(self)
         self._worker_thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
+        self._identity_thread: threading.Thread | None = None
         self._server: uvicorn.Server | None = None
         self._stopped = False
 
-    def _ensure_default_source_credential(self) -> None:
-        source = next(
-            (item for item in self.config.sources if item.id == DEFAULT_SOURCE_ID),
-            None,
-        )
-        if source is None:
-            return
+    def _import_bootstrap_if_present(self) -> None:
+        from .bootstrap import import_bootstrap
+
+        bootstrap_path = self.data_root / "bootstrap.json"
         try:
-            self.credential_store.get(source.auth.credential_ref)
-        except (FileNotFoundError, KeyError):
-            # The current content center identifies devices from Agent headers;
-            # keep a unique opaque bearer value so the adapter is also ready for
-            # deployments that enforce transport credentials.
-            self.credential_store.set(
-                source.auth.credential_ref,
-                secrets.token_urlsafe(32),
+            imported = import_bootstrap(
+                bootstrap_path,
+                config=self.config,
+                config_path=self.config_path,
+                credential_store=self.credential_store,
             )
+        except Exception as error:
+            # A damaged deployment bundle must not take down the loopback admin
+            # page; keep it for diagnosis and expose the source as unconfigured.
+            # Do not log the validation exception: Pydantic may include the
+            # bootstrap input, including its plaintext credential.
+            logger.error(
+                "source bootstrap import failed errorType=%s",
+                error.__class__.__name__,
+            )
+            return
+        if imported:
+            logger.info("source bootstrap imported and plaintext file removed")
 
     def start_background(self) -> None:
         if self._worker_thread and self._worker_thread.is_alive():
@@ -107,8 +114,14 @@ class PublisherAgentApp:
             name="publisher-heartbeat",
             daemon=True,
         )
+        self._identity_thread = threading.Thread(
+            target=self._identity_loop,
+            name="wechat-identity",
+            daemon=True,
+        )
         self._worker_thread.start()
         self._heartbeat_thread.start()
+        self._identity_thread.start()
 
     def run_forever(self, *, open_browser: bool = True) -> None:
         self.start_background()
@@ -153,9 +166,9 @@ class PublisherAgentApp:
             return
         self._stopped = True
         self.stop_event.set()
-        for thread in (self._worker_thread, self._heartbeat_thread):
+        for thread in (self._worker_thread, self._heartbeat_thread, self._identity_thread):
             if thread and thread is not threading.current_thread():
-                thread.join(timeout=10)
+                thread.join(timeout=2 if thread is self._identity_thread else 10)
         self.outbox.flush()
         self.media_cache.close()
         self.source_manager.close()
@@ -194,7 +207,7 @@ class PublisherAgentApp:
                 "id": self.config.agent.id,
                 "displayName": self.config.agent.display_name,
                 "accountKey": self.config.agent.account_key,
-                "version": "0.3.2",
+                "version": "0.3.3",
             },
             "wechat": wechat_status,
             "worker": {
@@ -225,7 +238,13 @@ class PublisherAgentApp:
         }
 
     def preflight(self) -> dict:
-        return self.executor.preflight().model_dump(by_alias=True, mode="json")
+        if not self._preflight_lock.acquire(blocking=False):
+            raise RuntimeError("环境预检正在执行，请等待当前检查结束")
+        try:
+            with self.worker.exclusive_desktop_action(timeout=2.0):
+                return self.executor.preflight().model_dump(by_alias=True, mode="json")
+        finally:
+            self._preflight_lock.release()
 
     def recognize_wechat_identity(self) -> dict:
         from .environment import is_desktop_unlocked, is_interactive_session
@@ -320,6 +339,26 @@ class PublisherAgentApp:
             except Exception:
                 logger.exception("heartbeat loop failed")
             self.stop_event.wait(self.config.runtime.heartbeat_seconds)
+
+    def _identity_loop(self) -> None:
+        if self.stop_event.wait(2):
+            return
+        while not self.stop_event.is_set():
+            try:
+                from .environment import is_desktop_unlocked, is_interactive_session
+                from .wechat_identity import get_wechat_identity
+
+                if (
+                    is_interactive_session()
+                    and is_desktop_unlocked()
+                    and self.ledger.get_active_task() is None
+                ):
+                    with self.worker.exclusive_desktop_action():
+                        if self.ledger.get_active_task() is None:
+                            get_wechat_identity()
+            except Exception:
+                logger.exception("background WeChat identity detection failed")
+            self.stop_event.wait(60)
 
     def _configure_logging(self) -> None:
         log_root = self.data_root / "logs"

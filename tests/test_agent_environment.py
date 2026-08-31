@@ -30,7 +30,11 @@ def test_locate_moments_icon_rejects_low_confidence_screen() -> None:
 
 
 def test_prepare_moments_window_uses_safe_template_fallback() -> None:
-    bridge = type("Bridge", (), {"available": True, "open_moments": lambda self: False})()
+    bridge = type(
+        "Bridge",
+        (),
+        {"available": True, "open_moments": lambda self, timeout=None: False},
+    )()
     with (
         patch("src.agent.environment.is_interactive_session", return_value=True),
         patch("src.agent.environment.is_desktop_unlocked", return_value=True),

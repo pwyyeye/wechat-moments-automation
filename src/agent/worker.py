@@ -97,9 +97,15 @@ class PublisherWorker:
         return self._lock.locked()
 
     @contextmanager
-    def exclusive_desktop_action(self):
+    def exclusive_desktop_action(self, *, timeout: float | None = None):
         """Pause polling while a confirmed local action manipulates WeChat."""
-        self._lock.acquire()
+        acquired = (
+            self._lock.acquire()
+            if timeout is None
+            else self._lock.acquire(timeout=timeout)
+        )
+        if not acquired:
+            raise RuntimeError("Worker 正在执行，请稍后重试本机桌面操作")
         try:
             yield
         finally:

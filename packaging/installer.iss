@@ -1,5 +1,5 @@
 #define AppName "Wechat Publisher Agent"
-#define AppVersion "0.3.2"
+#define AppVersion "0.3.3"
 #define AppExeName "WechatPublisherAgent.exe"
 
 [Setup]
@@ -24,6 +24,9 @@ Source: "..\dist\WechatPublisherAgent\*"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\install-startup.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\scripts\remove-startup.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\scripts\verify-installed-agent.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
+; Optional deployment secret. The Agent imports it into Windows DPAPI on first
+; start and removes the plaintext copy from LocalAppData immediately.
+Source: "{src}\agent-bootstrap.json"; DestDir: "{localappdata}\WechatPublisherAgent"; DestName: "bootstrap.json"; Flags: external skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\Wechat Publisher Agent"; Filename: "{app}\{#AppExeName}"; Parameters: "--agent"

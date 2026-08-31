@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from src.agent.app import PublisherAgentApp
@@ -191,13 +193,15 @@ def test_admin_html_handles_non_json_errors_without_masking_them(tmp_path):
     assert "try{data=JSON.parse(raw)}catch{data=raw}" in html
     assert "安全退出 Agent" in html
     assert "重新识别微信" in html
-    assert "首次启动会自动注册默认内容中心" in html
-    assert "编辑 URL" in html
+    assert "携带部署配置安装时会自动导入默认内容中心" in html
+    assert "配置 API Key" in html
     assert "f.authType.value=s.authType" in html
+    assert "timeoutMs=10000" in html
+    assert "最多等待 20 秒" in html
     app.stop()
 
 
-def test_default_source_gets_an_opaque_local_credential(tmp_path):
+def test_default_source_without_bootstrap_is_marked_unconfigured(tmp_path):
     config_path = tmp_path / "config.yaml"
     save_config(AgentConfig(sources=[default_source_config()]), config_path)
     credentials = InMemoryCredentialStore()
@@ -210,6 +214,69 @@ def test_default_source_gets_an_opaque_local_credential(tmp_path):
         source_factory=FakeSource,
     )
 
-    secret = credentials.get(f"dpapi://{DEFAULT_SOURCE_ID}")
-    assert len(secret) >= 32
+    source = app.source_manager.status()[0]
+    assert source["id"] == DEFAULT_SOURCE_ID
+    assert source["healthState"] == "unconfigured"
+    assert source["hasCredential"] is False
+    app.stop()
+
+
+def test_bootstrap_imports_source_credential_and_removes_plaintext(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    save_config(AgentConfig(sources=[default_source_config()]), config_path)
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "sources": [
+                    {
+                        "id": DEFAULT_SOURCE_ID,
+                        "name": "智能内容运营平台",
+                        "baseUrl": "https://content.example.test/openapi/publisher-agent/v1",
+                        "accountKey": "wechat-main",
+                        "auth": {"type": "bearer", "credential": "real-api-key"},
+                        "allowedHosts": ["content.example.test"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    credentials = InMemoryCredentialStore()
+
+    app = PublisherAgentApp(
+        config_path,
+        executor=FakeExecutor(),
+        credential_store=credentials,
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+
+    assert not bootstrap_path.exists()
+    assert credentials.get(f"dpapi://{DEFAULT_SOURCE_ID}") == "real-api-key"
+    source = app.source_manager.status()[0]
+    assert source["baseUrl"].startswith("https://content.example.test/")
+    assert source["healthState"] == "unknown"
+    assert source["hasCredential"] is True
+    app.stop()
+
+
+def test_invalid_bootstrap_does_not_take_down_local_admin(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    save_config(AgentConfig(sources=[default_source_config()]), config_path)
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text("not-json", encoding="utf-8")
+
+    app = PublisherAgentApp(
+        config_path,
+        executor=FakeExecutor(),
+        credential_store=InMemoryCredentialStore(),
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+
+    assert TestClient(app.admin_app).get("/api/health").json()["ok"] is True
+    assert bootstrap_path.exists()
+    assert app.source_manager.status()[0]["healthState"] == "unconfigured"
     app.stop()

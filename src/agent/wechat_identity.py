@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _CACHE_SECONDS = 30 * 60
 _RETRY_SECONDS = 60
+_WECHAT_PROCESS_NAMES = {"weixin.exe", "wechat.exe"}
 _cache_lock = threading.Lock()
 _cached_identity: "WeChatIdentity | None" = None
 _cached_hwnd: int | None = None
@@ -118,27 +119,72 @@ def get_wechat_identity_status() -> dict[str, str | None]:
         return dict(_identity_state)
 
 
+def get_cached_wechat_identity() -> WeChatIdentity | None:
+    """Return the last identity without activating WeChat or running OCR."""
+    with _cache_lock:
+        return _cached_identity
+
+
 def _window_process_name(hwnd: int) -> str:
-    import win32api
-    import win32con
     import win32process
 
-    handle = None
     try:
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
-        handle = win32api.OpenProcess(
-            win32con.PROCESS_QUERY_INFORMATION | win32con.PROCESS_VM_READ,
-            False,
-            pid,
-        )
-        path = win32process.GetModuleFileNameEx(handle, 0)
-        return Path(path).name.lower()
-    except Exception:
-        return ""
-    finally:
+        if not pid:
+            return ""
+
+        # PROCESS_QUERY_LIMITED_INFORMATION works across integrity levels where
+        # GetModuleFileNameEx(PROCESS_VM_READ) is commonly denied.
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)
         if handle:
-            win32api.CloseHandle(handle)
-    return None
+            try:
+                buffer = ctypes.create_unicode_buffer(32768)
+                size = ctypes.c_ulong(len(buffer))
+                if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                    return Path(buffer.value).name.lower()
+            finally:
+                kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+    return ""
+
+
+def _is_wechat_main_candidate(
+    class_name: str,
+    title: str,
+    process_name: str,
+    width: int,
+    height: int,
+    iconic: bool,
+) -> tuple[bool, int]:
+    """Classify a top-level window without relying on a WeChat version string."""
+    normalized_title = title.strip().lower()
+    is_known_title = normalized_title in {"微信", "weixin", "wechat"}
+    is_known_class = class_name == "WeChatMainWndForPC"
+    is_qt_main = class_name.startswith("Qt") and is_known_title
+    is_wechat_process = process_name in _WECHAT_PROCESS_NAMES
+
+    # Minimized windows can report a tiny placeholder rectangle. A known main
+    # class/title remains valid and will be restored before interaction.
+    known_shape = iconic or (width >= 120 and height >= 80)
+    process_shape = iconic or (width >= 240 and height >= 160)
+    if not ((is_known_class or is_qt_main) and known_shape) and not (
+        is_wechat_process and process_shape
+    ):
+        return False, 0
+
+    area = max(width, 0) * max(height, 0)
+    score = area
+    if is_known_class:
+        score += 100_000_000
+    if is_known_title:
+        score += 50_000_000
+    if is_wechat_process:
+        score += 20_000_000
+    if not iconic:
+        score += 1_000_000
+    return True, score
 
 
 def find_wechat_main_window() -> int | None:
@@ -149,24 +195,20 @@ def find_wechat_main_window() -> int | None:
     def callback(hwnd: int, _: object) -> None:
         try:
             class_name = win32gui.GetClassName(hwnd)
-            title = win32gui.GetWindowText(hwnd).strip().lower()
+            title = win32gui.GetWindowText(hwnd)
             left, top, right, bottom = win32gui.GetWindowRect(hwnd)
             width, height = right - left, bottom - top
-            if width < 420 or height < 350:
-                return
             process_name = _window_process_name(hwnd)
-            is_wechat_process = process_name in {"weixin.exe", "wechat.exe"}
-            is_known_title = title in {"微信", "weixin", "wechat"}
-            is_known_class = class_name == "WeChatMainWndForPC"
-            if not (is_known_class or (class_name.startswith("Qt") and is_known_title) or is_wechat_process):
+            accepted, score = _is_wechat_main_candidate(
+                class_name,
+                title,
+                process_name,
+                width,
+                height,
+                bool(win32gui.IsIconic(hwnd)),
+            )
+            if not accepted:
                 return
-            score = width * height
-            if is_known_class:
-                score += 100_000_000
-            if is_known_title:
-                score += 50_000_000
-            if is_wechat_process:
-                score += 20_000_000
             if win32gui.IsWindowVisible(hwnd):
                 score += 5_000_000
             candidates.append((score, hwnd))

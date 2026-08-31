@@ -38,7 +38,14 @@ class StandardHttpSource:
         )
 
     def _headers(self, *, request_id: str, idempotency_key: str | None = None):
-        secret = self.credential_store.get(self.config.auth.credential_ref)
+        try:
+            secret = self.credential_store.get(self.config.auth.credential_ref)
+        except (FileNotFoundError, KeyError, ValueError) as error:
+            raise SourceError(
+                "SOURCE_CREDENTIAL_MISSING",
+                "Data source credential has not been configured.",
+                retryable=False,
+            ) from error
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
@@ -137,7 +144,7 @@ class StandardHttpSource:
                 "agentId": self.agent_config.agent.id,
                 "instanceId": self.instance_id,
                 "displayName": self.agent_config.agent.display_name,
-                "agentVersion": "0.3.2",
+                "agentVersion": "0.3.3",
                 "os": f"{platform.system()} {platform.release()}",
                 "interactiveSession": snapshot.interactive_session,
                 "desktopUnlocked": snapshot.desktop_unlocked,

@@ -80,9 +80,12 @@ class FakeSource:
 def test_source_failure_isolated_and_shared_instance_id(tmp_path):
     config = AgentConfig(sources=[source("bad"), source("good")])
     ledger = AgentLedger(tmp_path / "agent.db", IdentityPayloadProtector())
+    credentials = InMemoryCredentialStore()
+    credentials.set("dpapi://bad", "bad-secret")
+    credentials.set("dpapi://good", "good-secret")
     manager = SourceManager(
         config,
-        InMemoryCredentialStore(),
+        credentials,
         ledger,
         source_factory=FakeSource,
     )

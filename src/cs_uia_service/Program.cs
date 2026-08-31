@@ -165,7 +165,6 @@ namespace WeChatUIA
                 Win32.GetWindowRect(hwnd, out var rect);
                 var width = rect.Right - rect.Left;
                 var height = rect.Bottom - rect.Top;
-                if (width < 420 || height < 350) return true;
 
                 var title = new System.Text.StringBuilder(256);
                 Win32.GetWindowText(hwnd, title, 256);
@@ -182,7 +181,11 @@ namespace WeChatUIA
                 catch { }
 
                 var isKnownClass = cn == "WeChatMainWndForPC";
-                if (!isKnownClass && !(cn.Contains("Qt") && isKnownTitle) && !isWeChatProcess)
+                var isIconic = Win32.IsIconic(hwnd);
+                var knownShape = isIconic || (width >= 120 && height >= 80);
+                var processShape = isIconic || (width >= 240 && height >= 160);
+                if (!((isKnownClass || (cn.Contains("Qt") && isKnownTitle)) && knownShape) &&
+                    !(isWeChatProcess && processShape))
                 {
                     return true;
                 }
@@ -191,6 +194,7 @@ namespace WeChatUIA
                 if (isKnownClass) score += 100_000_000;
                 if (isKnownTitle) score += 50_000_000;
                 if (isWeChatProcess) score += 20_000_000;
+                if (!isIconic) score += 1_000_000;
                 if (Win32.IsWindowVisible(hwnd)) score += 5_000_000;
                 if (score > bestScore)
                 {

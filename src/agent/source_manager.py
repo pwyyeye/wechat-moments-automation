@@ -35,7 +35,7 @@ class SourceRuntime:
 
     @property
     def available(self) -> bool:
-        if self.health_state in {"auth_error", "incompatible", "disabled"}:
+        if self.health_state in {"auth_error", "incompatible", "disabled", "unconfigured"}:
             return False
         return self.backoff_until is None or self.backoff_until <= datetime.now(timezone.utc)
 
@@ -73,10 +73,17 @@ class SourceManager:
                 current = self._sources.get(item.id)
                 if current is not None and current.config == item:
                     runtime = self._runtime.setdefault(item.id, SourceRuntime(item.id))
+                    has_credential = self._credential_available(item)
                     if not item.enabled:
                         runtime.health_state = "disabled"
-                    elif runtime.health_state == "disabled":
+                    elif not has_credential:
+                        runtime.health_state = "unconfigured"
+                        runtime.last_error_code = "SOURCE_CREDENTIAL_MISSING"
+                        runtime.last_error_message = "数据源尚未导入或填写 API Key"
+                    elif runtime.health_state in {"disabled", "unconfigured", "auth_error"}:
                         runtime.health_state = "unknown"
+                        runtime.last_error_code = None
+                        runtime.last_error_message = None
                     continue
                 if current is not None:
                     current.close()
@@ -86,9 +93,26 @@ class SourceManager:
                     self.credential_store,
                     instance_id=self.instance_id,
                 )
+                has_credential = self._credential_available(item)
                 self._runtime[item.id] = SourceRuntime(
                     source_id=item.id,
-                    health_state="unknown" if item.enabled else "disabled",
+                    health_state=(
+                        "disabled"
+                        if not item.enabled
+                        else "unknown"
+                        if has_credential
+                        else "unconfigured"
+                    ),
+                    last_error_code=(
+                        None
+                        if has_credential
+                        else "SOURCE_CREDENTIAL_MISSING"
+                    ),
+                    last_error_message=(
+                        None
+                        if has_credential
+                        else "数据源尚未导入或填写 API Key"
+                    ),
                 )
             self.scheduler.remove_missing(configured_ids)
 
@@ -200,6 +224,7 @@ class SourceManager:
                     "headerName": source.auth.header_name,
                     "allowedHosts": source.media_security.allowed_hosts,
                     "allowPrivateNetwork": source.media_security.allow_private_network,
+                    "hasCredential": self._credential_available(source),
                     "healthState": self._runtime[source.id].health_state,
                     "backoffUntil": (
                         self._runtime[source.id].backoff_until.isoformat()
@@ -286,7 +311,10 @@ class SourceManager:
             runtime.consecutive_failures += 1
             runtime.last_error_code = error.code
             runtime.last_error_message = str(error)
-            if error.code == "SOURCE_AUTH_FAILED" or error.status_code in {401, 403}:
+            if error.code == "SOURCE_CREDENTIAL_MISSING":
+                runtime.health_state = "unconfigured"
+                runtime.backoff_until = None
+            elif error.code == "SOURCE_AUTH_FAILED" or error.status_code in {401, 403}:
                 runtime.health_state = "auth_error"
                 runtime.backoff_until = None
             elif error.code == "SOURCE_PROTOCOL_INCOMPATIBLE":
@@ -315,6 +343,12 @@ class SourceManager:
             error.code,
             error.retryable,
         )
+
+    def _credential_available(self, source: SourceConfig) -> bool:
+        try:
+            return bool(self.credential_store.get(source.auth.credential_ref))
+        except (FileNotFoundError, KeyError, ValueError):
+            return False
 
     @staticmethod
     def _record_latency(

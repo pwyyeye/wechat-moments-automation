@@ -157,9 +157,9 @@ class UIABridge:
         data = json.loads(result)
         return data.get('success', False)
 
-    def open_moments(self) -> bool:
+    def open_moments(self, timeout: float = 8.0) -> bool:
         """Open only the Moments list through the dedicated safe command."""
-        result = self._run("open-moments")
+        result = self._run("open-moments", timeout=timeout)
         if result is None:
             return False
         data = json.loads(result)
