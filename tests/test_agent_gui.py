@@ -13,7 +13,7 @@ def test_native_gui_client_reads_loopback_status_without_browser(monkeypatch):
         captured.update(method=method, url=url, kwargs=kwargs)
         return httpx.Response(
             200,
-            json={"agent": {"version": "0.4.0"}, "sources": []},
+            json={"agent": {"version": "0.4.1"}, "sources": []},
             request=httpx.Request(method, url),
         )
 
@@ -22,7 +22,7 @@ def test_native_gui_client_reads_loopback_status_without_browser(monkeypatch):
 
     status = client.status()
 
-    assert status["agent"]["version"] == "0.4.0"
+    assert status["agent"]["version"] == "0.4.1"
     assert captured["method"] == "GET"
     assert captured["url"] == "http://127.0.0.1:17821/api/status"
     assert captured["kwargs"]["headers"]["X-Local-Agent-Action"] == "confirmed"
@@ -83,6 +83,32 @@ def test_native_gui_client_reports_unreachable_backend(monkeypatch):
 
     with pytest.raises(LocalAgentError, match="无法连接本机 Agent"):
         LocalAgentClient("http://127.0.0.1:17821").status()
+
+
+def test_native_gui_client_queries_filtered_logs(monkeypatch):
+    captured = {}
+
+    def request(method, url, **kwargs):
+        captured.update(method=method, url=url, kwargs=kwargs)
+        return httpx.Response(
+            200,
+            json={"entries": [], "logDirectory": "C:/agent/logs"},
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr("src.agent.admin.gui.httpx.request", request)
+
+    LocalAgentClient("http://127.0.0.1:17821").logs(
+        level="WARNING",
+        query="SOURCE_AUTH_FAILED",
+    )
+
+    assert captured["url"].endswith("/api/logs")
+    assert captured["kwargs"]["params"] == {
+        "level": "WARNING",
+        "limit": 300,
+        "query": "SOURCE_AUTH_FAILED",
+    }
 
 
 def test_operator_entry_points_use_native_control_panel():

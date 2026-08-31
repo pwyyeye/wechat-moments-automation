@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
+from .logs import read_recent_logs
 from .schemas import AgentIdentityUpdate, SourceUpsertRequest
 
 if TYPE_CHECKING:
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 def create_admin_app(agent: "PublisherAgentApp") -> FastAPI:
     app = FastAPI(
         title="WeChat Publisher Agent Local Admin",
-        version="0.4.0",
+        version="0.4.1",
         docs_url="/api/docs",
         redoc_url=None,
     )
@@ -137,6 +138,25 @@ def create_admin_app(agent: "PublisherAgentApp") -> FastAPI:
     @app.get("/api/tasks")
     def tasks(limit: int = 50):
         return agent.ledger.recent_tasks(limit)
+
+    @app.get("/api/logs")
+    def logs(
+        level: Literal["ALL", "INFO", "WARNING", "ERROR"] = "ERROR",
+        limit: int = Query(default=200, ge=1, le=1000),
+        query: str = Query(default="", max_length=200),
+    ):
+        log_directory = agent.data_root / "logs"
+        return {
+            "entries": read_recent_logs(
+                log_directory,
+                level=level,
+                limit=limit,
+                query=query,
+            ),
+            "level": level,
+            "query": query,
+            "logDirectory": str(log_directory),
+        }
 
     @app.get("/api/outbox")
     def outbox():

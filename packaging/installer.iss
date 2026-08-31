@@ -1,5 +1,5 @@
 #define AppName "Wechat Publisher Agent"
-#define AppVersion "0.4.0"
+#define AppVersion "0.4.1"
 #define AppExeName "WechatPublisherAgent.exe"
 
 [Setup]

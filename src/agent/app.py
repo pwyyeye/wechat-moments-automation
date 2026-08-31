@@ -239,7 +239,7 @@ class PublisherAgentApp:
                 "id": self.config.agent.id,
                 "displayName": self.config.agent.display_name,
                 "accountKey": self.config.agent.account_key,
-                "version": "0.4.0",
+                "version": "0.4.1",
             },
             "wechat": wechat_status,
             "worker": {

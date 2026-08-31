@@ -52,6 +52,15 @@ loopback HTTP endpoint remains bound to `127.0.0.1` for internal GUI-to-Agent
 communication and diagnostics only; normal startup never opens a browser or
 embeds a web view.
 
+## Local logs
+
+Agent 0.4.1 and later expose **View error logs** in the native control panel.
+The viewer defaults to ERROR and CRITICAL records and supports severity and
+keyword filters, refresh, copy, and opening the local log directory. It reads
+only `agent.log` and its rotating backups, groups multiline tracebacks with the
+originating record, and returns at most 1,000 records from the loopback API.
+No arbitrary filesystem path is accepted from the client.
+
 ## Rollback
 
 1. Stop the Agent from Task Manager or delete the login task with `scripts/remove-startup.ps1`.

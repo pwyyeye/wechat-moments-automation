@@ -180,6 +180,35 @@ def test_admin_exposes_safe_shutdown_and_manual_identity_actions(tmp_path, monke
     app.stop()
 
 
+def test_admin_exposes_filtered_local_logs(tmp_path):
+    app = PublisherAgentApp(
+        tmp_path / "config.yaml",
+        executor=FakeExecutor(),
+        credential_store=InMemoryCredentialStore(),
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+    log_directory = tmp_path / "logs"
+    log_directory.mkdir(exist_ok=True)
+    (log_directory / "agent.log").write_text(
+        "2026-08-31 10:00:00,000 INFO source healthy\n"
+        "2026-08-31 10:00:01,000 ERROR source SOURCE_AUTH_FAILED\n",
+        encoding="utf-8",
+    )
+
+    response = TestClient(app.admin_app).get(
+        "/api/logs",
+        params={"level": "ERROR", "query": "AUTH"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["entries"]) == 1
+    assert body["entries"][0]["message"] == "SOURCE_AUTH_FAILED"
+    assert body["logDirectory"] == str(log_directory)
+    app.stop()
+
+
 def test_shutdown_is_allowed_while_a_local_desktop_action_holds_the_worker_lock(
     tmp_path, monkeypatch
 ):

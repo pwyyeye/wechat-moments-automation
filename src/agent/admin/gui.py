@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from queue import SimpleQueue
@@ -40,6 +41,19 @@ class LocalAgentClient:
     def tasks(self) -> list[dict]:
         return self._request("GET", "/api/tasks")
 
+    def logs(
+        self,
+        *,
+        level: str = "ERROR",
+        limit: int = 300,
+        query: str = "",
+    ) -> dict:
+        return self._request(
+            "GET",
+            "/api/logs",
+            params={"level": level, "limit": limit, "query": query},
+        )
+
     def preflight(self) -> dict:
         return self._request("POST", "/api/preflight", timeout=25.0)
 
@@ -67,6 +81,7 @@ class LocalAgentClient:
         path: str,
         *,
         json: dict | None = None,
+        params: dict | None = None,
         timeout: float | None = None,
     ) -> Any:
         try:
@@ -74,6 +89,7 @@ class LocalAgentClient:
                 method,
                 f"{self.base_url}{path}",
                 json=json,
+                params=params,
                 headers={"X-Local-Agent-Action": "confirmed"},
                 timeout=timeout or self.timeout,
             )
@@ -136,6 +152,7 @@ class NativeAdminWindow:
         self._refreshing = False
         self._status: dict = {}
         self._sources: list[dict] = []
+        self._log_dialog = None
         self._facts: dict[str, Any] = {}
         self._callbacks: SimpleQueue[Callable] = SimpleQueue()
         self._configure_styles()
@@ -298,6 +315,14 @@ class NativeAdminWindow:
         self._button(buttons, "重新识别", self.identify, alt=True).grid(row=0, column=1, padx=6, pady=4)
         self._button(buttons, "刷新", self.refresh, alt=True).grid(row=1, column=0, padx=(0, 6), pady=4)
         self._button(buttons, "安全退出 Agent", self.shutdown, danger=True).grid(row=1, column=1, padx=6, pady=4)
+        self._button(buttons, "查看错误日志", self.open_logs, alt=True).grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=(0, 6),
+            pady=4,
+        )
 
         self.notice_label = tk.Label(
             parent,
@@ -536,6 +561,168 @@ class NativeAdminWindow:
 
     def open_source(self) -> None:
         self._source_dialog(None)
+
+    def open_logs(self) -> None:
+        if self._log_dialog is not None and self._log_dialog.winfo_exists():
+            self._log_dialog.deiconify()
+            self._log_dialog.lift()
+            self._log_dialog.focus_force()
+            return
+
+        tk = self.tk
+        from tkinter import messagebox
+
+        dialog = tk.Toplevel(self.root)
+        self._log_dialog = dialog
+        dialog.title("错误日志 - Windows Agent")
+        dialog.geometry("980x680")
+        dialog.minsize(760, 520)
+        dialog.transient(self.root)
+        dialog.configure(bg=self.colors.paper, padx=22, pady=18)
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
+        header = tk.Frame(dialog, bg=self.colors.paper)
+        header.pack(fill="x", pady=(0, 12))
+        tk.Label(
+            header,
+            text="Agent 运行日志",
+            bg=self.colors.paper,
+            fg=self.colors.ink,
+            font=("KaiTi", 24, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            header,
+            text="默认只显示错误；日志按时间从旧到新排列",
+            bg=self.colors.paper,
+            fg=self.colors.muted,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side="left", padx=16, pady=(8, 0))
+
+        tools = tk.Frame(dialog, bg=self.colors.paper)
+        tools.pack(fill="x", pady=(0, 10))
+        level_labels = {
+            "错误及严重": "ERROR",
+            "警告以上": "WARNING",
+            "信息以上": "INFO",
+            "全部": "ALL",
+        }
+        level_var = tk.StringVar(value="错误及严重")
+        level_box = self.ttk.Combobox(
+            tools,
+            textvariable=level_var,
+            values=tuple(level_labels),
+            state="readonly",
+            width=12,
+            style="Agent.TCombobox",
+        )
+        level_box.pack(side="left", padx=(0, 8), ipady=3)
+        query_var = tk.StringVar()
+        query_entry = tk.Entry(
+            tools,
+            textvariable=query_var,
+            bg=self.colors.panel,
+            fg=self.colors.ink,
+            relief="solid",
+            bd=1,
+            font=("Microsoft YaHei UI", 9),
+        )
+        query_entry.pack(side="left", fill="x", expand=True, padx=(0, 8), ipady=6)
+        query_entry.insert(0, "")
+
+        viewer_frame = tk.Frame(dialog, bg=self.colors.panel, bd=1, relief="solid")
+        viewer_frame.pack(fill="both", expand=True)
+        viewer = tk.Text(
+            viewer_frame,
+            wrap="none",
+            bg="#151B19",
+            fg="#E8EEE9",
+            insertbackground="white",
+            relief="flat",
+            padx=12,
+            pady=10,
+            font=("Consolas", 9),
+            state="disabled",
+        )
+        y_scroll = self.ttk.Scrollbar(viewer_frame, orient="vertical", command=viewer.yview)
+        x_scroll = self.ttk.Scrollbar(viewer_frame, orient="horizontal", command=viewer.xview)
+        viewer.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        y_scroll.pack(side="right", fill="y")
+        x_scroll.pack(side="bottom", fill="x")
+        viewer.pack(side="left", fill="both", expand=True)
+        viewer.tag_configure("ERROR", foreground="#FF8D79")
+        viewer.tag_configure("CRITICAL", foreground="#FF5F55")
+        viewer.tag_configure("WARNING", foreground="#F4C95D")
+        viewer.tag_configure("INFO", foreground="#D8E5DC")
+        viewer.tag_configure("DEBUG", foreground="#91A39A")
+
+        footer = tk.Frame(dialog, bg=self.colors.paper)
+        footer.pack(fill="x", pady=(10, 0))
+        status_label = tk.Label(
+            footer,
+            text="准备读取日志...",
+            bg=self.colors.paper,
+            fg=self.colors.muted,
+            anchor="w",
+            font=("Microsoft YaHei UI", 9),
+        )
+        status_label.pack(side="left", fill="x", expand=True)
+        state = {"directory": ""}
+
+        def refresh_logs(*_args) -> None:
+            status_label.configure(text="正在读取日志...", fg=self.colors.muted)
+
+            def loaded(result):
+                entries = result.get("entries", [])
+                state["directory"] = result.get("logDirectory", "")
+                viewer.configure(state="normal")
+                viewer.delete("1.0", "end")
+                if entries:
+                    for entry in entries:
+                        viewer.insert("end", entry.get("raw", "") + "\n\n", entry.get("level", "INFO"))
+                    viewer.see("end")
+                else:
+                    viewer.insert("end", "没有符合条件的日志记录。\n", "INFO")
+                viewer.configure(state="disabled")
+                status_label.configure(
+                    text=f"显示 {len(entries)} 条记录；最多返回 300 条",
+                    fg=self.colors.ok,
+                )
+
+            def failed(error):
+                status_label.configure(text=str(error), fg=self.colors.signal)
+
+            self._async(
+                lambda: self.client.logs(
+                    level=level_labels[level_var.get()],
+                    limit=300,
+                    query=query_var.get().strip(),
+                ),
+                loaded,
+                failed,
+            )
+
+        def open_directory() -> None:
+            directory = state["directory"]
+            if not directory:
+                messagebox.showinfo("日志目录", "请先刷新日志以取得目录。", parent=dialog)
+                return
+            try:
+                os.startfile(directory)
+            except OSError as error:
+                messagebox.showerror("无法打开日志目录", str(error), parent=dialog)
+
+        def copy_logs() -> None:
+            content = viewer.get("1.0", "end-1c")
+            dialog.clipboard_clear()
+            dialog.clipboard_append(content)
+            status_label.configure(text="当前日志已复制到剪贴板", fg=self.colors.ok)
+
+        self._button(tools, "查询", refresh_logs).pack(side="left", padx=(0, 6))
+        self._button(tools, "打开日志目录", open_directory, alt=True).pack(side="left", padx=6)
+        self._button(footer, "复制当前结果", copy_logs, alt=True).pack(side="right")
+        query_entry.bind("<Return>", refresh_logs)
+        level_box.bind("<<ComboboxSelected>>", refresh_logs)
+        refresh_logs()
 
     def edit_source(self) -> None:
         source = self._selected_source()
