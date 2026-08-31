@@ -4,6 +4,7 @@ import hashlib
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -94,6 +95,15 @@ class PublisherWorker:
     @property
     def is_active(self) -> bool:
         return self._lock.locked()
+
+    @contextmanager
+    def exclusive_desktop_action(self):
+        """Pause polling while a confirmed local action manipulates WeChat."""
+        self._lock.acquire()
+        try:
+            yield
+        finally:
+            self._lock.release()
 
     def run_once(self) -> bool:
         if not self._lock.acquire(blocking=False):

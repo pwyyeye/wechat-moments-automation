@@ -228,14 +228,17 @@ class PublisherAgentApp:
         return self.executor.preflight().model_dump(by_alias=True, mode="json")
 
     def recognize_wechat_identity(self) -> dict:
-        if self.worker.is_active or self.ledger.get_active_task() is not None:
-            raise RuntimeError("发布任务执行期间不能切换微信窗口，请稍后重试")
         from .environment import is_desktop_unlocked, is_interactive_session
         from .wechat_identity import get_wechat_identity, get_wechat_identity_status
 
         if not is_interactive_session() or not is_desktop_unlocked():
             raise RuntimeError("Windows 桌面已锁定或不可交互，无法识别微信账号")
-        identity = get_wechat_identity(force=True)
+        # Worker.is_active also covers short no-task polling cycles. Waiting for
+        # its lock avoids a false conflict while still excluding real publishes.
+        with self.worker.exclusive_desktop_action():
+            if self.ledger.get_active_task() is not None:
+                raise RuntimeError("发布任务执行期间不能切换微信窗口，请稍后重试")
+            identity = get_wechat_identity(force=True)
         return {
             "recognized": identity is not None,
             "nickname": identity.nickname if identity else None,

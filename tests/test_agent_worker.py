@@ -10,7 +10,6 @@ from src.agent.outbox import OutboxDispatcher
 from src.agent.sources.base import SourceError
 from src.agent.worker import PublisherWorker
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -177,3 +176,15 @@ def test_restart_after_final_intent_reports_uncertain_without_click(tmp_path):
     worker.run_once()
     assert executor.calls == 0
     assert ledger.recent_tasks()[0]["state"] == "uncertain"
+
+
+def test_confirmed_local_action_temporarily_pauses_polling(tmp_path):
+    sources = FakeSources(None)
+    ledger, worker = make_worker(tmp_path, sources, FakeExecutor())
+
+    with worker.exclusive_desktop_action():
+        assert worker.is_active is True
+        assert worker.run_once() is False
+
+    assert worker.is_active is False
+    assert ledger.get_active_task() is None
