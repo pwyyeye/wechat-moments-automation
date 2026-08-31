@@ -4,10 +4,17 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+
+DEFAULT_SOURCE_ID = "auto-content-production"
+DEFAULT_SOURCE_URL = (
+    "https://zcnvn9mqrac4.aiforce.cloud/app/app_17cxjhfjvpf/"
+    "openapi/publisher-agent/v1"
+)
 
 
 def default_data_root() -> Path:
@@ -127,13 +134,44 @@ class AgentConfig(BaseModel):
         return value
 
 
+def default_source_config() -> SourceConfig:
+    base_url = os.environ.get(
+        "WECHAT_PUBLISHER_DEFAULT_SOURCE_URL",
+        DEFAULT_SOURCE_URL,
+    ).strip()
+    host = urlparse(base_url).hostname
+    return SourceConfig.model_validate(
+        {
+            "id": DEFAULT_SOURCE_ID,
+            "name": "智能内容运营平台",
+            "baseUrl": base_url,
+            "accountKey": "wechat-main",
+            "auth": {
+                "type": "bearer",
+                "credentialRef": f"dpapi://{DEFAULT_SOURCE_ID}",
+            },
+            "mediaSecurity": {
+                "allowedHosts": [host] if host else [],
+                "allowPrivateNetwork": False,
+            },
+        }
+    )
+
+
 def load_config(path: Path | str | None = None) -> tuple[AgentConfig, Path]:
+    uses_default_location = path is None
     config_path = Path(path) if path else default_data_root() / "config.yaml"
     if config_path.exists():
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        return AgentConfig.model_validate(raw), config_path
+        config = AgentConfig.model_validate(raw)
+        if uses_default_location and not config.sources:
+            config.sources.append(default_source_config())
+            save_config(config, config_path)
+        return config, config_path
 
-    config = AgentConfig()
+    config = AgentConfig(
+        sources=[default_source_config()] if uses_default_location else []
+    )
     save_config(config, config_path)
     return config, config_path
 

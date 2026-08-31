@@ -1,5 +1,5 @@
 #define AppName "Wechat Publisher Agent"
-#define AppVersion "0.3.0"
+#define AppVersion "0.3.2"
 #define AppExeName "WechatPublisherAgent.exe"
 
 [Setup]
@@ -16,6 +16,7 @@ OutputBaseFilename=WechatPublisherAgent-{#AppVersion}-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\assets\agent-icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 
 [Files]

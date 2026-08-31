@@ -43,6 +43,22 @@ def test_preflight_does_not_touch_wechat_when_the_desktop_is_locked() -> None:
     publisher_factory.assert_not_called()
 
 
+def test_preflight_returns_a_safe_snapshot_when_window_preparation_fails() -> None:
+    executor = DesktopPublishExecutor(publisher_factory=Mock())
+
+    with (
+        patch("src.agent.executor.probe_environment", return_value=snapshot()),
+        patch(
+            "src.agent.executor.prepare_moments_window",
+            side_effect=RuntimeError("window activation denied"),
+        ),
+    ):
+        result = executor.preflight()
+
+    assert result.running is True
+    assert result.moments_window_ready is False
+
+
 def test_publisher_is_initialized_once_before_use() -> None:
     publisher = Mock()
     publisher.initialize.return_value = True

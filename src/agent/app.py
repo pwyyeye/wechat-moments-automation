@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import threading
 import webbrowser
 from pathlib import Path
@@ -9,7 +10,7 @@ import uvicorn
 
 from .admin.schemas import SourceUpsertRequest
 from .admin.server import create_admin_app
-from .config import AgentConfig, SourceConfig, load_config, save_config
+from .config import DEFAULT_SOURCE_ID, SourceConfig, load_config, save_config
 from .credential_store import DpapiCredentialStore, DpapiPayloadProtector
 from .executor import DesktopPublishExecutor, PublishExecutor
 from .ledger import AgentLedger
@@ -43,6 +44,7 @@ class PublisherAgentApp:
         self.credential_store = credential_store or DpapiCredentialStore(
             self.data_root / "credentials"
         )
+        self._ensure_default_source_credential()
         protector = payload_protector or DpapiPayloadProtector()
         self.ledger = AgentLedger(self.data_root / "data" / "agent.db", protector)
         source_kwargs = {}
@@ -70,7 +72,26 @@ class PublisherAgentApp:
         self.admin_app = create_admin_app(self)
         self._worker_thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
+        self._server: uvicorn.Server | None = None
         self._stopped = False
+
+    def _ensure_default_source_credential(self) -> None:
+        source = next(
+            (item for item in self.config.sources if item.id == DEFAULT_SOURCE_ID),
+            None,
+        )
+        if source is None:
+            return
+        try:
+            self.credential_store.get(source.auth.credential_ref)
+        except (FileNotFoundError, KeyError):
+            # The current content center identifies devices from Agent headers;
+            # keep a unique opaque bearer value so the adapter is also ready for
+            # deployments that enforce transport credentials.
+            self.credential_store.set(
+                source.auth.credential_ref,
+                secrets.token_urlsafe(32),
+            )
 
     def start_background(self) -> None:
         if self._worker_thread and self._worker_thread.is_alive():
@@ -99,7 +120,7 @@ class PublisherAgentApp:
             threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         logger.info("starting local admin url=%s", url)
         try:
-            uvicorn.run(
+            config = uvicorn.Config(
                 self.admin_app,
                 host=self.config.runtime.local_admin_host,
                 port=self.config.runtime.local_admin_port,
@@ -109,11 +130,23 @@ class PublisherAgentApp:
                 # windowed executable. Keep all service logs in agent.log.
                 log_config=None,
             )
+            self._server = uvicorn.Server(config)
+            self._server.run()
         except Exception:
             logger.exception("local admin failed url=%s", url)
             raise
         finally:
+            self._server = None
             self.stop()
+
+    def request_shutdown(self) -> None:
+        """Stop accepting work and ask the local HTTP server to exit."""
+        if self.worker.is_active or self.ledger.get_active_task() is not None:
+            raise RuntimeError("当前有发布任务正在执行，任务结束后再安全退出")
+        logger.info("safe shutdown requested from local admin")
+        self.stop_event.set()
+        if self._server is not None:
+            self._server.should_exit = True
 
     def stop(self) -> None:
         if self._stopped:
@@ -130,6 +163,10 @@ class PublisherAgentApp:
 
     def status(self) -> dict:
         snapshot = self.executor.snapshot()
+        from .wechat_identity import get_wechat_identity_status
+
+        wechat_status = snapshot.model_dump(by_alias=True, mode="json")
+        wechat_status["identityRecognition"] = get_wechat_identity_status()
         active = self.ledger.get_active_task()
         sources = self.source_manager.status()
         outbox_backlog = self.ledger.outbox_backlog()
@@ -157,9 +194,9 @@ class PublisherAgentApp:
                 "id": self.config.agent.id,
                 "displayName": self.config.agent.display_name,
                 "accountKey": self.config.agent.account_key,
-                "version": "0.3.0",
+                "version": "0.3.2",
             },
-            "wechat": snapshot.model_dump(by_alias=True, mode="json"),
+            "wechat": wechat_status,
             "worker": {
                 "active": self.worker.is_active,
                 "task": (
@@ -189,6 +226,22 @@ class PublisherAgentApp:
 
     def preflight(self) -> dict:
         return self.executor.preflight().model_dump(by_alias=True, mode="json")
+
+    def recognize_wechat_identity(self) -> dict:
+        if self.worker.is_active or self.ledger.get_active_task() is not None:
+            raise RuntimeError("发布任务执行期间不能切换微信窗口，请稍后重试")
+        from .environment import is_desktop_unlocked, is_interactive_session
+        from .wechat_identity import get_wechat_identity, get_wechat_identity_status
+
+        if not is_interactive_session() or not is_desktop_unlocked():
+            raise RuntimeError("Windows 桌面已锁定或不可交互，无法识别微信账号")
+        identity = get_wechat_identity(force=True)
+        return {
+            "recognized": identity is not None,
+            "nickname": identity.nickname if identity else None,
+            "wechatId": identity.wechat_id if identity else None,
+            "diagnostic": get_wechat_identity_status(),
+        }
 
     def update_identity(self, display_name: str, account_key: str) -> None:
         with self._config_lock:

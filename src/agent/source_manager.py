@@ -196,6 +196,10 @@ class SourceManager:
                     "weight": source.weight,
                     "baseUrl": str(source.base_url),
                     "accountKey": source.account_key,
+                    "authType": source.auth.type,
+                    "headerName": source.auth.header_name,
+                    "allowedHosts": source.media_security.allowed_hosts,
+                    "allowPrivateNetwork": source.media_security.allow_private_network,
                     "healthState": self._runtime[source.id].health_state,
                     "backoffUntil": (
                         self._runtime[source.id].backoff_until.isoformat()

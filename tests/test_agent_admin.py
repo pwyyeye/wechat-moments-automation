@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from src.agent.app import PublisherAgentApp
+from src.agent.config import DEFAULT_SOURCE_ID, AgentConfig, default_source_config, save_config
 from src.agent.credential_store import IdentityPayloadProtector, InMemoryCredentialStore
 from src.agent.models import AgentSnapshot
 from src.agent.sources.base import SourceMeta
@@ -112,14 +113,103 @@ def test_run_forever_does_not_require_console_logging(tmp_path, monkeypatch):
         source_factory=FakeSource,
     )
     captured = {}
+
+    class FakeServer:
+        def __init__(self, config):
+            captured["config"] = config
+            self.should_exit = False
+
+        def run(self):
+            captured["run"] = True
+
     monkeypatch.setattr(app, "start_background", lambda: None)
     monkeypatch.setattr(app, "stop", lambda: None)
-    monkeypatch.setattr(
-        "src.agent.app.uvicorn.run",
-        lambda application, **kwargs: captured.update(kwargs),
-    )
+    monkeypatch.setattr("src.agent.app.uvicorn.Server", FakeServer)
 
     app.run_forever(open_browser=False)
 
-    assert captured["log_config"] is None
-    assert captured["access_log"] is False
+    assert captured["config"].log_config is None
+    assert captured["config"].access_log is False
+    assert captured["run"] is True
+
+
+def test_admin_exposes_safe_shutdown_and_manual_identity_actions(tmp_path, monkeypatch):
+    app = PublisherAgentApp(
+        tmp_path / "config.yaml",
+        executor=FakeExecutor(),
+        credential_store=InMemoryCredentialStore(),
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+    client = TestClient(app.admin_app)
+    requested = []
+    monkeypatch.setattr(
+        app,
+        "recognize_wechat_identity",
+        lambda: {
+            "recognized": True,
+            "nickname": "番石榴",
+            "wechatId": "higuava001",
+            "diagnostic": {"state": "identified"},
+        },
+    )
+    monkeypatch.setattr(app, "request_shutdown", lambda: requested.append(True))
+
+    assert client.post("/api/wechat/identify").status_code == 403
+    identified = client.post(
+        "/api/wechat/identify",
+        headers={"X-Local-Agent-Action": "confirmed"},
+    )
+    assert identified.status_code == 200
+    assert identified.json()["nickname"] == "番石榴"
+
+    assert client.post("/api/shutdown").status_code == 403
+    shutdown = client.post(
+        "/api/shutdown",
+        headers={"X-Local-Agent-Action": "confirmed"},
+    )
+    assert shutdown.status_code == 202
+    import time
+
+    deadline = time.monotonic() + 1
+    while not requested and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert requested == [True]
+    app.stop()
+
+
+def test_admin_html_handles_non_json_errors_without_masking_them(tmp_path):
+    app = PublisherAgentApp(
+        tmp_path / "config.yaml",
+        executor=FakeExecutor(),
+        credential_store=InMemoryCredentialStore(),
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+    html = TestClient(app.admin_app).get("/").text
+
+    assert "try{data=JSON.parse(raw)}catch{data=raw}" in html
+    assert "安全退出 Agent" in html
+    assert "重新识别微信" in html
+    assert "首次启动会自动注册默认内容中心" in html
+    assert "编辑 URL" in html
+    assert "f.authType.value=s.authType" in html
+    app.stop()
+
+
+def test_default_source_gets_an_opaque_local_credential(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    save_config(AgentConfig(sources=[default_source_config()]), config_path)
+    credentials = InMemoryCredentialStore()
+
+    app = PublisherAgentApp(
+        config_path,
+        executor=FakeExecutor(),
+        credential_store=credentials,
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+
+    secret = credentials.get(f"dpapi://{DEFAULT_SOURCE_ID}")
+    assert len(secret) >= 32
+    app.stop()

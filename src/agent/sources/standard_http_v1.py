@@ -137,7 +137,7 @@ class StandardHttpSource:
                 "agentId": self.agent_config.agent.id,
                 "instanceId": self.instance_id,
                 "displayName": self.agent_config.agent.display_name,
-                "agentVersion": "0.3.0",
+                "agentVersion": "0.3.2",
                 "os": f"{platform.system()} {platform.release()}",
                 "interactiveSession": snapshot.interactive_session,
                 "desktopUnlocked": snapshot.desktop_unlocked,

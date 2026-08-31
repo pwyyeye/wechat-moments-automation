@@ -1,8 +1,14 @@
-from pathlib import Path
 
 import pytest
 
-from src.agent.config import AgentConfig, SourceConfig, load_config, save_config
+from src.agent.config import (
+    DEFAULT_SOURCE_ID,
+    DEFAULT_SOURCE_URL,
+    AgentConfig,
+    SourceConfig,
+    load_config,
+    save_config,
+)
 
 
 def source_payload(base_url="https://content.example.test/openapi/publisher-agent/v1"):
@@ -46,3 +52,34 @@ def test_loopback_http_is_allowed_for_local_contract_testing():
         source_payload("http://127.0.0.1:3000/openapi/publisher-agent/v1")
     )
     assert config.base_url.scheme == "http"
+
+
+def test_default_location_auto_registers_configurable_content_source(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    configured_url = "https://publisher.example.test/openapi/publisher-agent/v1"
+    monkeypatch.setenv("WECHAT_PUBLISHER_DEFAULT_SOURCE_URL", configured_url)
+
+    config, path = load_config()
+
+    assert path == tmp_path / "WechatPublisherAgent" / "config.yaml"
+    assert len(config.sources) == 1
+    assert config.sources[0].id == DEFAULT_SOURCE_ID
+    assert str(config.sources[0].base_url) == configured_url
+    assert config.sources[0].media_security.allowed_hosts == ["publisher.example.test"]
+
+
+def test_default_location_migrates_an_existing_empty_source_list(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    path = tmp_path / "WechatPublisherAgent" / "config.yaml"
+    save_config(AgentConfig(), path)
+
+    config, _ = load_config()
+
+    assert [source.id for source in config.sources] == [DEFAULT_SOURCE_ID]
+    assert str(config.sources[0].base_url) == DEFAULT_SOURCE_URL

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from .environment import prepare_moments_window, probe_environment
 from .models import AgentSnapshot, PublisherTask
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -47,8 +50,13 @@ class DesktopPublishExecutor:
         if not snapshot.interactive_session or not snapshot.desktop_unlocked:
             return snapshot
         with self._lock:
-            moments_ready = snapshot.logged_in and prepare_moments_window()
-            refreshed = self.snapshot()
+            try:
+                moments_ready = snapshot.logged_in and prepare_moments_window()
+                refreshed = self.snapshot()
+            except Exception:
+                logger.exception("environment preflight failed")
+                moments_ready = False
+                refreshed = snapshot
             return refreshed.model_copy(
                 update={
                     "logged_in": snapshot.logged_in,

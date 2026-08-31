@@ -78,6 +78,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    icon=str(ROOT / "assets" / "agent-icon.ico"),
 )
 coll = COLLECT(
     exe,
