@@ -77,9 +77,7 @@ class Operator:
 
     def find_moments_window(self) -> bool:
         """Find the separate Moments window used by desktop WeChat 4.x."""
-        main_pid = None
-        if self._wechat_hwnd and win32gui.IsWindow(self._wechat_hwnd):
-            _, main_pid = win32process.GetWindowThreadProcessId(self._wechat_hwnd)
+        from .wechat_discovery import WECHAT_PROCESS_NAMES, _get_process_name
 
         candidates = []
 
@@ -88,10 +86,9 @@ class Operator:
                 return
             if win32gui.GetWindowText(hwnd) != '朋友圈':
                 return
-            if main_pid:
-                _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                if pid != main_pid:
-                    return
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if _get_process_name(pid) not in WECHAT_PROCESS_NAMES:
+                return
             candidates.append(hwnd)
 
         win32gui.EnumWindows(callback, None)

@@ -57,6 +57,37 @@ def test_camera_click_uses_safe_header_position() -> None:
     operator.sim.click_at.assert_called_once_with(1098, 430)
 
 
+def test_moments_window_can_belong_to_a_separate_weixin_process(
+    monkeypatch,
+) -> None:
+    operator = Operator.__new__(Operator)
+    operator._wechat_hwnd = 111
+    operator._moments_hwnd = None
+    monkeypatch.setattr(
+        "src.executor.operator.win32gui.EnumWindows",
+        lambda callback, value: callback(222, value),
+    )
+    monkeypatch.setattr(
+        "src.executor.operator.win32gui.IsWindowVisible",
+        lambda hwnd: True,
+    )
+    monkeypatch.setattr(
+        "src.executor.operator.win32gui.GetWindowText",
+        lambda hwnd: "朋友圈",
+    )
+    monkeypatch.setattr(
+        "src.executor.operator.win32process.GetWindowThreadProcessId",
+        lambda hwnd: (1, 9002 if hwnd == 222 else 9001),
+    )
+    monkeypatch.setattr(
+        "src.executor.wechat_discovery._get_process_name",
+        lambda pid: "Weixin.exe",
+    )
+
+    assert operator.find_moments_window()
+    assert operator._moments_hwnd == 222
+
+
 def test_login_fallback_scans_only_the_main_window() -> None:
     operator = Operator.__new__(Operator)
     operator._uia = None
