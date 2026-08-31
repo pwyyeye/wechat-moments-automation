@@ -93,5 +93,8 @@ class DesktopPublishExecutor:
                 from src.core.publisher import EventDrivenPublisher
 
                 self.publisher_factory = EventDrivenPublisher
-            self._publisher = self.publisher_factory()
+            publisher = self.publisher_factory()
+            if not publisher.initialize():
+                raise RuntimeError("publisher initialization failed")
+            self._publisher = publisher
         return self._publisher

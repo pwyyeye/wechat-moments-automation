@@ -450,7 +450,7 @@ class EventDrivenPublisher:
         """Open the desktop 4.x editor, selecting its required first image."""
         region = self.operator.active_window_region()
         self.ocr._invalidate_cache()
-        if self.ocr.find_best('这一刻的想法', region=region):
+        if self._desktop_editor_is_open(region):
             # The desktop 4.x compose panel is opened by selecting its first
             # image. Reusing that panel must not append the same image again.
             self._prepared_image_count = 1
@@ -469,7 +469,7 @@ class EventDrivenPublisher:
             self.operator.activate_moments_window()
             region = self.operator.active_window_region()
             self.ocr._invalidate_cache()
-            if self.ocr.find_best('这一刻的想法', region=region):
+            if self._desktop_editor_is_open(region):
                 self._prepared_image_count = 1
                 logger.info("朋友圈编辑页已打开，首张图片已添加")
                 return True
@@ -477,6 +477,16 @@ class EventDrivenPublisher:
 
         logger.error("选择图片后未检测到朋友圈编辑页")
         return False
+
+    def _desktop_editor_is_open(self, region) -> bool:
+        """Recognize both empty and already-populated desktop compose panels."""
+        texts = [block.text for block in self.ocr.scan_screen(region=region)]
+        if any('这一刻的想法' in text for text in texts):
+            return True
+        return all(
+            any(marker in text for text in texts)
+            for marker in ('发表', '谁可以看')
+        )
 
     def _step_type_text(self, text: str) -> bool:
         """
@@ -489,7 +499,14 @@ class EventDrivenPublisher:
             ocr_region=self.operator.active_window_region(),
         )
         if not self.operator.click_element(input_element):
-            return False
+            region = self.operator.active_window_region()
+            self.ocr._invalidate_cache()
+            if (
+                not self._desktop_editor_is_open(region)
+                or not self.operator.click_moments_editor_body()
+            ):
+                return False
+            logger.info("占位文字已消失，使用桌面编辑区安全焦点")
         self.sim.micro_pause(mean=0.2)
 
         # 清空旧内容 + 输入

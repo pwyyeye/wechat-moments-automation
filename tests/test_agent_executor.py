@@ -41,3 +41,16 @@ def test_preflight_does_not_touch_wechat_when_the_desktop_is_locked() -> None:
 
     assert result.desktop_unlocked is False
     publisher_factory.assert_not_called()
+
+
+def test_publisher_is_initialized_once_before_use() -> None:
+    publisher = Mock()
+    publisher.initialize.return_value = True
+    publisher_factory = Mock(return_value=publisher)
+    executor = DesktopPublishExecutor(publisher_factory=publisher_factory)
+
+    assert executor._get_publisher() is publisher
+    assert executor._get_publisher() is publisher
+
+    publisher_factory.assert_called_once_with()
+    publisher.initialize.assert_called_once_with()

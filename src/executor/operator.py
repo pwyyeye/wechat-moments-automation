@@ -178,6 +178,26 @@ class Operator:
         self.sim.click_at(x, y)
         return True
 
+    def click_moments_editor_body(self) -> bool:
+        """Focus the desktop 4.x compose text area without using placeholder text."""
+        if not self.activate_moments_window():
+            return False
+        region = self.active_window_region()
+        if not region:
+            return False
+
+        left, top, width, height = region
+        if width < 300 or height < 300:
+            logger.error(f"朋友圈窗口尺寸异常: {region}")
+            return False
+
+        # This point remains inside the compose body after its placeholder is
+        # replaced by text and stays well above the image and publish controls.
+        x = left + int(width * 0.35)
+        y = top + int(height * 0.22)
+        self.sim.click_at(x, y)
+        return True
+
     # ══════════════════════════════════════════════════════════
     # 基础操作原语
     # ══════════════════════════════════════════════════════════

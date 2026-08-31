@@ -14,13 +14,17 @@ def build_desktop_publisher(ocr_results) -> EventDrivenPublisher:
     publisher.file_dialog = Mock()
     publisher.file_dialog.select_file_via_pywinauto.return_value = True
     publisher.ocr = Mock()
-    publisher.ocr.find_best.side_effect = ocr_results
+    publisher.ocr.scan_screen.side_effect = ocr_results
     publisher._prepared_image_count = 0
     return publisher
 
 
+def text_block(text: str) -> TextBlock:
+    return TextBlock(text, 1, 1, 10, 10, 0.99, [])
+
+
 def test_desktop_editor_selects_required_first_image(monkeypatch) -> None:
-    publisher = build_desktop_publisher([None, object()])
+    publisher = build_desktop_publisher([[], [text_block("这一刻的想法")]])
     monkeypatch.setattr("src.core.publisher.time.sleep", Mock())
 
     assert publisher._prepare_desktop_editor(["first.png"])
@@ -33,7 +37,18 @@ def test_desktop_editor_selects_required_first_image(monkeypatch) -> None:
 
 
 def test_desktop_editor_reuses_an_open_compose_panel() -> None:
-    publisher = build_desktop_publisher([object()])
+    publisher = build_desktop_publisher([[text_block("这一刻的想法")]])
+
+    assert publisher._prepare_desktop_editor(["first.png"])
+    assert publisher._prepared_image_count == 1
+    publisher.operator.click_moments_camera.assert_not_called()
+    publisher.file_dialog.select_file_via_pywinauto.assert_not_called()
+
+
+def test_desktop_editor_reuses_a_populated_compose_panel() -> None:
+    publisher = build_desktop_publisher(
+        [[text_block("发表"), text_block("谁可以看")]]
+    )
 
     assert publisher._prepare_desktop_editor(["first.png"])
     assert publisher._prepared_image_count == 1
@@ -42,7 +57,7 @@ def test_desktop_editor_reuses_an_open_compose_panel() -> None:
 
 
 def test_desktop_editor_requires_an_image_to_open() -> None:
-    publisher = build_desktop_publisher([None])
+    publisher = build_desktop_publisher([[]])
 
     assert not publisher._prepare_desktop_editor([])
     publisher.operator.click_moments_camera.assert_not_called()
@@ -56,6 +71,45 @@ def test_camera_click_uses_safe_header_position() -> None:
 
     assert operator.click_moments_camera()
     operator.sim.click_at.assert_called_once_with(1098, 430)
+
+
+def test_editor_body_click_uses_safe_compose_position() -> None:
+    operator = Operator.__new__(Operator)
+    operator.sim = Mock()
+    operator.activate_moments_window = Mock(return_value=True)
+    operator.active_window_region = Mock(return_value=(1000, 400, 600, 800))
+
+    assert operator.click_moments_editor_body()
+    operator.sim.click_at.assert_called_once_with(1210, 576)
+
+
+def test_populated_editor_text_is_replaced_via_safe_body_focus(
+    monkeypatch,
+) -> None:
+    publisher = EventDrivenPublisher.__new__(EventDrivenPublisher)
+    publisher.operator = Mock()
+    publisher.operator.click_element.return_value = False
+    publisher.operator.active_window_region.return_value = (1000, 400, 600, 800)
+    publisher.operator.click_moments_editor_body.return_value = True
+    publisher.ocr = Mock()
+    publisher.ocr.scan_screen.return_value = [
+        text_block("发表"),
+        text_block("谁可以看"),
+    ]
+    publisher.sim = Mock()
+    publisher._watch_manager = Mock()
+    publisher.bus = Mock()
+    hotkey = Mock()
+    monkeypatch.setattr("pyautogui.hotkey", hotkey)
+
+    assert publisher._step_type_text("冻结文案")
+    publisher.operator.click_moments_editor_body.assert_called_once_with()
+    hotkey.assert_called_once_with("ctrl", "a")
+    publisher.sim.type_text.assert_called_once_with("冻结文案")
+    publisher._watch_manager.after.assert_called_once_with(
+        0.5,
+        {"reason": "typing_complete"},
+    )
 
 
 def test_moments_window_can_belong_to_a_separate_weixin_process(
