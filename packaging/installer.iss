@@ -1,5 +1,5 @@
 #define AppName "微信小助手"
-#define AppVersion "0.6.6"
+#define AppVersion "0.6.7"
 #define AppExeName "WechatPublisherAgent.exe"
 
 [Setup]
@@ -14,13 +14,17 @@ ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=output
 OutputBaseFilename=微信小助手-{#AppVersion}-setup
 Compression=lzma2
-SolidCompression=yes
+; The bundled OCR runtime is large. Per-file compression avoids Windows
+; security scanners holding a solid-stream temp file during MoveFile.
+SolidCompression=no
 WizardStyle=modern
 SetupIconFile=..\assets\agent-icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 
 [Files]
-Source: "..\dist\WechatPublisherAgent\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Windows 10+ provides UCRT system-wide. Shipping a private copy can be blocked
+; by RedirectionGuard/security scanners while Setup moves the extracted DLL.
+Source: "..\dist\WechatPublisherAgent\*"; DestDir: "{app}"; Excludes: "_internal\ucrtbase.dll"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\scripts\install-startup.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\scripts\remove-startup.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\scripts\verify-installed-agent.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion

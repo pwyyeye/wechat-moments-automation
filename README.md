@@ -2,8 +2,8 @@
 
 版本无关的 PC 微信朋友圈自动化。事件驱动架构 + 语义级定位 + 可持久化的多数据源 Agent。
 
-[![Version](https://img.shields.io/badge/version-0.6.6-blue)]()
-[![Tests](https://img.shields.io/badge/tests-191%20passed-brightgreen)]()
+[![Version](https://img.shields.io/badge/version-0.6.7-blue)]()
+[![Tests](https://img.shields.io/badge/tests-195%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![.NET](https://img.shields.io/badge/.NET-8.0-purple)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
@@ -79,6 +79,14 @@ Agent 领单前要求桌面可交互且未锁屏、微信正在运行且已登�
 | **版本追踪** | 从 PE 头读取微信版本，变化时自动重建模板库 |
 | **任务持久** | Agent 侧 SQLite 账本 + 事务化 outbox，重启不丢状态；核心侧 `state.json` 记录每日计数与历史 |
 | **通知系统** | Telegram Bot + 邮件（SMTP）+ Windows 系统通知 |
+
+### Agent 0.6.7 新增
+
+- 点击控制台右上角关闭按钮时同步安全退出后台 Agent，不再留下领取任务或定时调度的残余进程。
+- 关闭窗口会等待后台端口真正停止后再销毁 UI；发布任务执行中仍会拒绝退出并保留窗口显示原因。
+- 控制台按当前屏幕高度自适应，压缩标题、间距、按钮和列表高度，常见桌面能显示更多任务信息。
+- 本机状态区和工作区分别增加纵向滚动条与鼠标滚轮支持，小屏或高 DPI 环境下仍可访问全部功能。
+- 安装包改用 LZMA2 单文件压缩并使用 Windows 10+ 系统 UCRT，避免大型 OCR 安装包在安全扫描或 RedirectionGuard 下出现临时文件占用。
 
 ### Agent 0.6.6 新增
 
@@ -431,7 +439,7 @@ python main.py --test
 powershell -ExecutionPolicy Bypass -File scripts\build-agent.ps1
 ```
 
-产物：`dist\WechatPublisherAgent\WechatPublisherAgent.exe`，安装包 `packaging\output\微信小助手-0.6.4-setup.exe`。
+产物：`dist\WechatPublisherAgent\WechatPublisherAgent.exe`，安装包 `packaging\output\微信小助手-0.6.7-setup.exe`。
 
 当前本地构建产物未包含 Authenticode 签名。正式跨电脑分发前应使用组织代码签名证书签名安装包，并重新记录签名后文件的 SHA-256。
 

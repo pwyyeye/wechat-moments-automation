@@ -163,6 +163,21 @@ class LocalAgentClient:
         raise LocalAgentError(str(detail or f"HTTP {response.status_code}"))
 
 
+def stop_agent_backend(client: LocalAgentClient, timeout: float = 15.0) -> None:
+    """Request a safe shutdown and wait until the backend is actually gone."""
+    try:
+        client.shutdown()
+    except LocalAgentError:
+        # The server can close its socket before returning the shutdown response.
+        if client.wait_until_stopped(1.0):
+            return
+        raise
+    if not client.wait_until_stopped(timeout):
+        raise LocalAgentError(
+            f"Agent 未能在 {timeout:g} 秒内退出，请确认没有正在执行的发布任务"
+        )
+
+
 @dataclass
 class Palette:
     paper: str = "#F2EEE2"
@@ -188,10 +203,14 @@ class NativeAdminWindow:
         self.colors = Palette()
         self.root = tk.Tk()
         self.root.title("微信小助手")
-        self.root.geometry("1180x780")
-        self.root.minsize(980, 650)
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = max(920, min(1180, screen_width - 40))
+        window_height = max(600, min(760, screen_height - 100))
+        self.root.geometry(f"{window_width}x{window_height}")
+        self.root.minsize(920, 560)
         self.root.configure(bg=self.colors.paper)
-        self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
         try:
             import sys
 
@@ -207,9 +226,12 @@ class NativeAdminWindow:
         self._tasks: list[dict] = []
         self._log_dialog = None
         self._facts: dict[str, Any] = {}
+        self._scroll_canvases: list[Any] = []
         self._callbacks: SimpleQueue[Callable] = SimpleQueue()
         self._configure_styles()
         self._build()
+        self.root.bind_all("<MouseWheel>", self._scroll_active_panel, add="+")
+        self.root.after_idle(self._reset_panel_scroll_positions)
         self.root.after(50, self._drain_callbacks)
 
     def run(self) -> int:
@@ -228,7 +250,7 @@ class NativeAdminWindow:
             background=self.colors.panel,
             fieldbackground=self.colors.panel,
             foreground=self.colors.ink,
-            rowheight=30,
+            rowheight=26,
             borderwidth=0,
             font=("Microsoft YaHei UI", 9),
         )
@@ -248,11 +270,11 @@ class NativeAdminWindow:
 
     def _build(self) -> None:
         tk = self.tk
-        outer = tk.Frame(self.root, bg=self.colors.paper, padx=28, pady=22)
+        outer = tk.Frame(self.root, bg=self.colors.paper, padx=16, pady=12)
         outer.pack(fill="both", expand=True)
 
         header = tk.Frame(outer, bg=self.colors.paper)
-        header.pack(fill="x", pady=(0, 18))
+        header.pack(fill="x", pady=(0, 8))
         title_group = tk.Frame(header, bg=self.colors.paper)
         title_group.pack(side="left")
         tk.Label(
@@ -267,8 +289,8 @@ class NativeAdminWindow:
             text="微信小助手",
             bg=self.colors.paper,
             fg=self.colors.ink,
-            font=("KaiTi", 34, "bold"),
-        ).pack(anchor="w", pady=(2, 0))
+            font=("KaiTi", 27, "bold"),
+        ).pack(anchor="w")
         tk.Label(
             header,
             text="原生桌面控制台\n本地 API 仅供内部通信",
@@ -277,13 +299,13 @@ class NativeAdminWindow:
             fg=self.colors.ink,
             bd=1,
             relief="solid",
-            padx=14,
-            pady=9,
+            padx=10,
+            pady=5,
             font=("Microsoft YaHei UI", 9),
         ).pack(side="right", anchor="n")
 
         rule = tk.Frame(outer, height=2, bg=self.colors.ink)
-        rule.pack(fill="x", pady=(0, 16))
+        rule.pack(fill="x", pady=(0, 8))
 
         body = tk.PanedWindow(
             outer,
@@ -293,26 +315,72 @@ class NativeAdminWindow:
             bd=0,
         )
         body.pack(fill="both", expand=True)
-        left = self._panel(body, width=330)
-        right = self._panel(body)
-        body.add(left, minsize=300, width=340)
-        body.add(right, minsize=590)
+        left_container, left = self._scrollable_panel(body, width=300)
+        right_container, right = self._scrollable_panel(body)
+        body.add(left_container, minsize=270, width=310)
+        body.add(right_container, minsize=560)
         self._build_status(left)
         self._build_workspace(right)
 
-    def _panel(self, parent, *, width: int | None = None):
-        frame = self.tk.Frame(
+    def _scrollable_panel(self, parent, *, width: int | None = None):
+        container = self.tk.Frame(
             parent,
             bg=self.colors.panel,
             bd=1,
             relief="solid",
-            padx=18,
-            pady=16,
             width=width,
         )
-        if width:
-            frame.pack_propagate(False)
-        return frame
+        canvas = self.tk.Canvas(
+            container,
+            bg=self.colors.panel,
+            bd=0,
+            highlightthickness=0,
+        )
+        scrollbar = self.ttk.Scrollbar(
+            container,
+            orient="vertical",
+            command=canvas.yview,
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        content = self.tk.Frame(
+            canvas,
+            bg=self.colors.panel,
+            padx=12,
+            pady=10,
+        )
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def resize_content(event) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+
+        def update_scroll_region(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        canvas.bind("<Configure>", resize_content)
+        content.bind("<Configure>", update_scroll_region)
+        self._scroll_canvases.append(canvas)
+        return container, content
+
+    def _scroll_active_panel(self, event):
+        pointer_x, pointer_y = self.root.winfo_pointerxy()
+        for canvas in self._scroll_canvases:
+            left = canvas.winfo_rootx()
+            top = canvas.winfo_rooty()
+            if (
+                left <= pointer_x < left + canvas.winfo_width()
+                and top <= pointer_y < top + canvas.winfo_height()
+            ):
+                delta = -1 if event.delta > 0 else 1
+                canvas.yview_scroll(delta * 3, "units")
+                return "break"
+        return None
+
+    def _reset_panel_scroll_positions(self) -> None:
+        for canvas in self._scroll_canvases:
+            canvas.yview_moveto(0.0)
 
     def _build_status(self, parent) -> None:
         tk = self.tk
@@ -321,8 +389,8 @@ class NativeAdminWindow:
             text="本机状态",
             bg=self.colors.panel,
             fg=self.colors.ink,
-            font=("KaiTi", 22, "bold"),
-        ).pack(anchor="w", pady=(0, 12))
+            font=("KaiTi", 20, "bold"),
+        ).pack(anchor="w", pady=(0, 6))
         facts = tk.Frame(parent, bg=self.colors.panel)
         facts.pack(fill="x")
         for key, label in (
@@ -339,14 +407,14 @@ class NativeAdminWindow:
             ("alerts", "告警"),
         ):
             row = tk.Frame(facts, bg=self.colors.panel)
-            row.pack(fill="x", pady=1)
+            row.pack(fill="x")
             tk.Label(
                 row,
                 text=label,
                 bg=self.colors.panel,
                 fg=self.colors.ink,
                 font=("Microsoft YaHei UI", 9),
-            ).pack(side="left", anchor="n", pady=5)
+            ).pack(side="left", anchor="n", pady=3)
             value = tk.Label(
                 row,
                 text="-",
@@ -356,25 +424,25 @@ class NativeAdminWindow:
                 wraplength=190,
                 font=("Microsoft YaHei UI", 9),
             )
-            value.pack(side="right", anchor="n", pady=5)
+            value.pack(side="right", anchor="n", pady=3)
             self._facts[key] = value
             tk.Frame(row, height=1, bg=self.colors.soft).pack(
                 side="bottom", fill="x"
             )
 
         buttons = tk.Frame(parent, bg=self.colors.panel)
-        buttons.pack(fill="x", pady=(14, 8))
-        self._button(buttons, "环境预检", self.preflight).grid(row=0, column=0, padx=(0, 6), pady=4)
-        self._button(buttons, "重新识别", self.identify, alt=True).grid(row=0, column=1, padx=6, pady=4)
-        self._button(buttons, "刷新", self.refresh, alt=True).grid(row=1, column=0, padx=(0, 6), pady=4)
-        self._button(buttons, "安全退出 Agent", self.shutdown, danger=True).grid(row=1, column=1, padx=6, pady=4)
+        buttons.pack(fill="x", pady=(8, 4))
+        self._button(buttons, "环境预检", self.preflight).grid(row=0, column=0, padx=(0, 4), pady=2)
+        self._button(buttons, "重新识别", self.identify, alt=True).grid(row=0, column=1, padx=4, pady=2)
+        self._button(buttons, "刷新", self.refresh, alt=True).grid(row=1, column=0, padx=(0, 4), pady=2)
+        self._button(buttons, "安全退出 Agent", self.shutdown, danger=True).grid(row=1, column=1, padx=4, pady=2)
         self._button(buttons, "查看错误日志", self.open_logs, alt=True).grid(
             row=2,
             column=0,
             columnspan=2,
             sticky="ew",
             padx=(0, 6),
-            pady=4,
+            pady=2,
         )
 
         self.notice_label = tk.Label(
@@ -387,7 +455,7 @@ class NativeAdminWindow:
             wraplength=290,
             font=("Microsoft YaHei UI", 9),
         )
-        self.notice_label.pack(fill="x", pady=(8, 0))
+        self.notice_label.pack(fill="x", pady=(4, 0))
 
     def _build_workspace(self, parent) -> None:
         tk = self.tk
@@ -398,12 +466,12 @@ class NativeAdminWindow:
             text="内容数据源",
             bg=self.colors.panel,
             fg=self.colors.ink,
-            font=("KaiTi", 22, "bold"),
+            font=("KaiTi", 20, "bold"),
         ).pack(side="left")
         self._button(source_head, "+ 添加来源", self.open_source).pack(side="right")
 
         source_tools = tk.Frame(parent, bg=self.colors.panel)
-        source_tools.pack(fill="x", pady=(8, 8))
+        source_tools.pack(fill="x", pady=(5, 5))
         self._button(source_tools, "测试连接", self.test_source, alt=True).pack(side="left", padx=(0, 6))
         self._button(source_tools, "编辑 URL / 凭据", self.edit_source, alt=True).pack(side="left", padx=6)
         self._button(source_tools, "删除", self.delete_source, danger=True).pack(side="left", padx=6)
@@ -413,7 +481,7 @@ class NativeAdminWindow:
             parent,
             columns=source_columns,
             show="headings",
-            height=5,
+            height=3,
             style="Agent.Treeview",
         )
         for column, title, width in (
@@ -427,18 +495,18 @@ class NativeAdminWindow:
         self.source_tree.pack(fill="x")
 
         connector_head = tk.Frame(parent, bg=self.colors.panel)
-        connector_head.pack(fill="x", pady=(14, 0))
+        connector_head.pack(fill="x", pady=(8, 0))
         tk.Label(
             connector_head,
             text="浏览器发布账号",
             bg=self.colors.panel,
             fg=self.colors.ink,
-            font=("KaiTi", 20, "bold"),
+            font=("KaiTi", 18, "bold"),
         ).pack(side="left")
         self._button(connector_head, "+ Chrome Profile", self.open_wechat_sync).pack(side="right")
 
         connector_tools = tk.Frame(parent, bg=self.colors.panel)
-        connector_tools.pack(fill="x", pady=(7, 7))
+        connector_tools.pack(fill="x", pady=(4, 4))
         self._button(connector_tools, "检测登录", self.test_wechat_sync, alt=True).pack(side="left", padx=(0, 5))
         self._button(connector_tools, "启动 Chrome", self.launch_wechat_sync, alt=True).pack(side="left", padx=5)
         self._button(connector_tools, "复制连接配置", self.copy_wechat_sync_setup, alt=True).pack(side="left", padx=5)
@@ -450,7 +518,7 @@ class NativeAdminWindow:
             parent,
             columns=connector_columns,
             show="headings",
-            height=4,
+            height=3,
             style="Agent.Treeview",
         )
         for column, title, width in (
@@ -464,13 +532,13 @@ class NativeAdminWindow:
         self.connector_tree.pack(fill="x")
 
         task_head = tk.Frame(parent, bg=self.colors.panel)
-        task_head.pack(fill="x", pady=(14, 8))
+        task_head.pack(fill="x", pady=(8, 5))
         tk.Label(
             task_head,
             text="最近任务",
             bg=self.colors.panel,
             fg=self.colors.ink,
-            font=("KaiTi", 20, "bold"),
+            font=("KaiTi", 18, "bold"),
         ).pack(side="left")
         self._button(task_head, "刷新任务", self.refresh, alt=True).pack(side="right")
         self._button(task_head, "取消定时", self.cancel_local_schedule, danger=True).pack(
@@ -488,7 +556,7 @@ class NativeAdminWindow:
             parent,
             columns=task_columns,
             show="headings",
-            height=6,
+            height=4,
             style="Agent.Treeview",
         )
         for column, title, width in (
@@ -519,8 +587,8 @@ class NativeAdminWindow:
             activeforeground=self.colors.ink if alt else "white",
             relief="solid" if alt else "flat",
             bd=1 if alt else 0,
-            padx=12,
-            pady=7,
+            padx=9,
+            pady=5,
             cursor="hand2",
             font=("Microsoft YaHei UI", 9, "bold"),
         )
@@ -914,22 +982,37 @@ class NativeAdminWindow:
         self._async(self.client.identify_wechat, done)
 
     def shutdown(self) -> None:
+        self._request_shutdown()
+
+    def _on_window_close(self) -> None:
+        self._request_shutdown()
+
+    def _request_shutdown(self) -> None:
         from tkinter import messagebox
 
+        if self._closing:
+            return
         if not messagebox.askyesno(
-            "安全退出 Agent",
-            "确定停止 Agent？\n\n已领取的发布任务执行期间会拒绝退出；微信不会被关闭。",
+            "退出微信小助手",
+            "关闭窗口将同时退出后台 Agent，确定继续？\n\n"
+            "已领取的发布任务执行期间会拒绝退出；微信不会被关闭。",
             parent=self.root,
         ):
             return
-        self.notice("正在停止 Agent；识别卡住时最多等待 8 秒...", "info")
+        self._closing = True
+        self.notice("正在安全停止后台 Agent，请稍候...", "info")
 
         def done(_result):
-            self._closing = True
-            self.notice("退出请求已接受，可以关闭控制台", "ok")
-            self.root.after(700, self.root.destroy)
+            self.notice("后台 Agent 已退出，正在关闭窗口", "ok")
+            self.root.after(100, self.root.destroy)
 
-        self._async(self.client.shutdown, done)
+        def failed(error):
+            self._closing = False
+            self.notice(str(error), "error")
+            messagebox.showerror("无法退出微信小助手", str(error), parent=self.root)
+            self.root.after(1000, self.refresh)
+
+        self._async(lambda: stop_agent_backend(self.client), done, failed)
 
     def open_source(self) -> None:
         self._source_dialog(None)

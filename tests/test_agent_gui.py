@@ -4,7 +4,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from src.agent.admin.gui import LocalAgentClient, LocalAgentError
+from src.agent.admin.gui import LocalAgentClient, LocalAgentError, stop_agent_backend
 from src.agent.admin.launcher import ensure_agent_backend
 from src.agent.single_instance import SingleInstance
 
@@ -140,6 +140,65 @@ def test_native_gui_client_creates_local_schedule(monkeypatch):
     assert captured["kwargs"]["json"] == payload
 
 
+class _ShutdownClient:
+    def __init__(self, *, shutdown_error: Exception | None = None, stopped=True):
+        self.shutdown_error = shutdown_error
+        self.stopped = stopped
+        self.shutdown_calls = 0
+        self.wait_timeouts = []
+
+    def shutdown(self):
+        self.shutdown_calls += 1
+        if self.shutdown_error:
+            raise self.shutdown_error
+
+    def wait_until_stopped(self, timeout):
+        self.wait_timeouts.append(timeout)
+        return self.stopped
+
+
+def test_native_gui_close_waits_for_backend_to_stop():
+    client = _ShutdownClient()
+
+    stop_agent_backend(client, timeout=12.0)
+
+    assert client.shutdown_calls == 1
+    assert client.wait_timeouts == [12.0]
+
+
+def test_native_gui_close_accepts_shutdown_response_connection_loss():
+    client = _ShutdownClient(
+        shutdown_error=LocalAgentError("无法连接本机 Agent"),
+        stopped=True,
+    )
+
+    stop_agent_backend(client)
+
+    assert client.shutdown_calls == 1
+    assert client.wait_timeouts == [1.0]
+
+
+def test_native_gui_close_stays_open_when_backend_cannot_stop():
+    client = _ShutdownClient(stopped=False)
+
+    with pytest.raises(LocalAgentError, match="未能在 15 秒内退出"):
+        stop_agent_backend(client)
+
+
+def test_native_gui_window_close_uses_safe_shutdown_and_scrollable_panels():
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "agent" / "admin" / "gui.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'protocol("WM_DELETE_WINDOW", self._on_window_close)' in source
+    assert 'protocol("WM_DELETE_WINDOW", self.root.destroy)' not in source
+    assert "stop_agent_backend(self.client)" in source
+    assert "create_window((0, 0), window=content" in source
+    assert 'orient="vertical"' in source
+    assert 'bind_all("<MouseWheel>"' in source
+    assert "after_idle(self._reset_panel_scroll_positions)" in source
+
+
 def test_operator_entry_points_use_native_control_panel():
     root = Path(__file__).resolve().parents[1]
     installer = (root / "packaging" / "installer.iss").read_text(encoding="utf-8")
@@ -150,6 +209,8 @@ def test_operator_entry_points_use_native_control_panel():
     assert 'Parameters: "--agent"; Flags: nowait' not in installer
     assert '#define AppName "微信小助手"' in installer
     assert "OutputBaseFilename=微信小助手-{#AppVersion}-setup" in installer
+    assert 'Excludes: "_internal\\ucrtbase.dll"' in installer
+    assert "SolidCompression=no" in installer
     assert '" --agent' in startup
     assert "CurrentVersion\\Run" in startup
     assert 'ValueName: "WechatPublisherAgent"' in installer
