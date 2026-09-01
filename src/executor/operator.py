@@ -456,7 +456,8 @@ class Operator:
             # 杀掉微信进程（尝试两个可能的进程名）
             for proc_name in ['WeChat.exe', 'Weixin.exe']:
                 subprocess.run(['taskkill', '/f', '/im', proc_name],
-                               capture_output=True, check=False)
+                               capture_output=True, check=False,
+                               creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             time.sleep(2.0)
 
             # 重新启动

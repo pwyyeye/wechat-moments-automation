@@ -2,8 +2,8 @@
 
 版本无关的 PC 微信朋友圈自动化。事件驱动架构 + 语义级定位 + 可持久化的多数据源 Agent。
 
-[![Version](https://img.shields.io/badge/version-0.6.4-blue)]()
-[![Tests](https://img.shields.io/badge/tests-181%20passed-brightgreen)]()
+[![Version](https://img.shields.io/badge/version-0.6.5-blue)]()
+[![Tests](https://img.shields.io/badge/tests-187%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![.NET](https://img.shields.io/badge/.NET-8.0-purple)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
@@ -79,6 +79,11 @@ Agent 领单前要求桌面可交互且未锁屏、微信正在运行且已登�
 | **版本追踪** | 从 PE 头读取微信版本，变化时自动重建模板库 |
 | **任务持久** | Agent 侧 SQLite 账本 + 事务化 outbox，重启不丢状态；核心侧 `state.json` 记录每日计数与历史 |
 | **通知系统** | Telegram Bot + 邮件（SMTP）+ Windows 系统通知 |
+
+### Agent 0.6.5 新增
+
+- 微信进程扫描改用 Windows 原生 `QueryFullProcessImageNameW`，不再为无权限 PID 反复启动 `tasklist.exe` 黑窗。
+- 其他诊断和恢复命令统一使用无窗口子进程，避免桌面 Agent 拉起控制台窗口。
 
 ### Agent 0.6.4 新增
 

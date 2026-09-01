@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wechat-moments-automation"
-version = "0.6.4"
+version = "0.6.5"
 description = "版本无关的PC微信朋友圈自动化系统 - 事件驱动 + 语义定位 + 三层集成"
 readme = "README.md"
 license = {text = "MIT"}

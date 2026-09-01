@@ -386,7 +386,13 @@ def run_self_test(publisher) -> int:
     # 4. .NET SDK
     import subprocess
     try:
-        r = subprocess.run(['dotnet', '--version'], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(
+            ['dotnet', '--version'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
         results.append(('✅', '.NET SDK', r.stdout.strip()))
     except Exception:
         results.append(('⚠️', '.NET SDK', '未安装 — C# 服务无法编译'))

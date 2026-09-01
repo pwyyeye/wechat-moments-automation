@@ -8,13 +8,14 @@ Author: 版本无关微信自动化系统
 """
 
 import logging
-import win32gui
-import win32process
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Tuple
+
 import win32api
 import win32con
-from typing import Optional, List, Dict, Tuple
-from pathlib import Path
-from dataclasses import dataclass
+import win32gui
+import win32process
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,6 @@ def _find_wechat_processes() -> List[dict]:
     from ctypes import wintypes
 
     psapi = ctypes.windll.psapi
-    kernel32 = ctypes.windll.kernel32
 
     processes = []
     process_ids = (wintypes.DWORD * 1024)()
@@ -213,6 +213,10 @@ def _find_wechat_windows() -> List[Tuple[int, str]]:
 
 def _get_process_name(pid: int) -> Optional[str]:
     """获取进程名称"""
+    path = _query_process_exe_path(pid)
+    if path:
+        return Path(path).name
+
     try:
         handle = win32api.OpenProcess(
             win32con.PROCESS_QUERY_INFORMATION | win32con.PROCESS_VM_READ,
@@ -223,25 +227,15 @@ def _get_process_name(pid: int) -> Optional[str]:
         return Path(path).name
     except Exception:
         pass
-
-    # 回退: tasklist
-    try:
-        import subprocess
-        r = subprocess.run(
-            ['tasklist', '/fi', f'PID eq {pid}', '/fo', 'csv', '/nh'],
-            capture_output=True, text=True, timeout=5
-        )
-        parts = r.stdout.strip().replace('"', '').split(',')
-        if len(parts) >= 1:
-            return parts[0].strip()
-    except Exception:
-        pass
-
     return None
 
 
 def _get_process_exe_path(pid: int) -> Optional[str]:
     """获取进程的可执行文件完整路径"""
+    path = _query_process_exe_path(pid)
+    if path:
+        return path
+
     try:
         handle = win32api.OpenProcess(
             win32con.PROCESS_QUERY_INFORMATION | win32con.PROCESS_VM_READ,
@@ -269,6 +263,38 @@ def _get_process_exe_path(pid: int) -> Optional[str]:
         pass
 
     return None
+
+
+def _query_process_exe_path(pid: int) -> Optional[str]:
+    """Read a process path without spawning tasklist or another console process."""
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return None
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return None
+        return buffer.value
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _find_in_dir(directory: Path, candidates: List[str]) -> Optional[Path]:
