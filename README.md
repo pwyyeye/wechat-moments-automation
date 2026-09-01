@@ -2,7 +2,7 @@
 
 版本无关的 PC 微信朋友圈自动化。事件驱动架构 + 语义级定位 + 可持久化的多数据源 Agent。
 
-[![Version](https://img.shields.io/badge/version-0.6.3-blue)]()
+[![Version](https://img.shields.io/badge/version-0.6.4-blue)]()
 [![Tests](https://img.shields.io/badge/tests-181%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![.NET](https://img.shields.io/badge/.NET-8.0-purple)]()
@@ -80,8 +80,11 @@ Agent 领单前要求桌面可交互且未锁屏、微信正在运行且已登�
 | **任务持久** | Agent 侧 SQLite 账本 + 事务化 outbox，重启不丢状态；核心侧 `state.json` 记录每日计数与历史 |
 | **通知系统** | Telegram Bot + 邮件（SMTP）+ Windows 系统通知 |
 
-### Agent 0.6.3 新增
+### Agent 0.6.4 新增
 
+- 覆盖安装时由控制台安全关闭旧版后台后再启动新版，安装器不再并行拉起两个 Agent。
+- 后台与控制台分别增加 Windows 单实例保护，重复启动不会产生窗口或任务领取循环。
+- 控制台代启动后台时完整透传 `--agent-config`，避免自定义环境误连生产数据源。
 - Agent 启动、状态刷新和心跳不再自动点击微信；微信昵称仅在用户点击“重新识别微信”后读取。
 - 手动身份识别从最多六组坐标轮询改为单次 DPI 自适应点击，识别完成后只关闭已确认的资料卡。
 - 微信窗口会话变化后立即清除旧身份缓存，必须重新识别，避免把任务路由到旧账号。
@@ -416,7 +419,7 @@ python main.py --test
 powershell -ExecutionPolicy Bypass -File scripts\build-agent.ps1
 ```
 
-产物：`dist\WechatPublisherAgent\WechatPublisherAgent.exe`，安装包 `packaging\output\微信小助手-0.6.3-setup.exe`。
+产物：`dist\WechatPublisherAgent\WechatPublisherAgent.exe`，安装包 `packaging\output\微信小助手-0.6.4-setup.exe`。
 
 当前本地构建产物未包含 Authenticode 签名。正式跨电脑分发前应使用组织代码签名证书签名安装包，并重新记录签名后文件的 SHA-256。
 

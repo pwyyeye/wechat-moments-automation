@@ -1,9 +1,12 @@
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
 
 from src.agent.admin.gui import LocalAgentClient, LocalAgentError
+from src.agent.admin.launcher import ensure_agent_backend
+from src.agent.single_instance import SingleInstance
 
 
 def test_native_gui_client_reads_loopback_status_without_browser(monkeypatch):
@@ -144,6 +147,7 @@ def test_operator_entry_points_use_native_control_panel():
     app = (root / "src" / "agent" / "app.py").read_text(encoding="utf-8")
 
     assert 'Parameters: "--agent-ui"' in installer
+    assert 'Parameters: "--agent"; Flags: nowait' not in installer
     assert '#define AppName "微信小助手"' in installer
     assert "OutputBaseFilename=微信小助手-{#AppVersion}-setup" in installer
     assert '" --agent' in startup
@@ -151,3 +155,88 @@ def test_operator_entry_points_use_native_control_panel():
     assert 'ValueName: "WechatPublisherAgent"' in installer
     assert "Register-ScheduledTask" not in startup
     assert "webbrowser" not in app
+
+
+class _LauncherClient:
+    def __init__(self, *, ready: bool, version: str = "0.6.4") -> None:
+        self.ready = ready
+        self.version = version
+        self.shutdown_called = False
+        self.stopped = True
+
+    def wait_until_ready(self, _timeout: float) -> bool:
+        return self.ready
+
+    def status(self) -> dict:
+        return {"agent": {"version": self.version}}
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+    def wait_until_stopped(self, _timeout: float) -> bool:
+        return self.stopped
+
+
+def test_ui_launcher_reuses_matching_backend():
+    calls = []
+    client = _LauncherClient(ready=True)
+
+    started = ensure_agent_backend(
+        client,
+        expected_version="0.6.4",
+        command=["agent.exe", "--agent"],
+        working_directory="D:/agent",
+        popen=lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert started is False
+    assert client.shutdown_called is False
+    assert calls == []
+
+
+def test_ui_launcher_replaces_old_backend_and_starts_once():
+    calls = []
+    client = _LauncherClient(ready=True, version="0.6.3")
+
+    started = ensure_agent_backend(
+        client,
+        expected_version="0.6.4",
+        command=["agent.exe", "--agent", "--agent-config", "D:/agent/config.yaml"],
+        working_directory="D:/agent",
+        popen=lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert started is True
+    assert client.shutdown_called is True
+    assert len(calls) == 1
+    assert calls[0][0][0][-2:] == ["--agent-config", "D:/agent/config.yaml"]
+
+
+def test_ui_launcher_refuses_to_overlap_backend_that_cannot_stop():
+    client = _LauncherClient(ready=True, version="0.6.3")
+    client.stopped = False
+
+    with pytest.raises(RuntimeError, match="未能在 15 秒内退出"):
+        ensure_agent_backend(
+            client,
+            expected_version="0.6.4",
+            command=["agent.exe", "--agent"],
+            working_directory="D:/agent",
+            popen=lambda *args, **kwargs: None,
+        )
+
+
+def test_windows_single_instance_mutex_blocks_duplicate_process_role():
+    mutex_name = f"WechatPublisherAgent.Test.{uuid4().hex}"
+    first = SingleInstance(mutex_name)
+    second = SingleInstance(mutex_name)
+    replacement = SingleInstance(mutex_name)
+    try:
+        assert first.acquire() is True
+        assert second.acquire() is False
+        first.close()
+        assert replacement.acquire() is True
+    finally:
+        first.close()
+        second.close()
+        replacement.close()

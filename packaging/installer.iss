@@ -1,5 +1,5 @@
 #define AppName "微信小助手"
-#define AppVersion "0.6.3"
+#define AppVersion "0.6.4"
 #define AppExeName "WechatPublisherAgent.exe"
 
 [Setup]
@@ -40,7 +40,6 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\install-startup.ps1"" -ExecutablePath ""{app}\{#AppExeName}"""; Flags: runhidden waituntilterminated; StatusMsg: "Registering user logon startup..."
-Filename: "{app}\{#AppExeName}"; Parameters: "--agent"; Flags: nowait runhidden postinstall skipifsilent
 Filename: "{app}\{#AppExeName}"; Parameters: "--agent-ui"; Description: "打开微信小助手"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]

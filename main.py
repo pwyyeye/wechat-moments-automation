@@ -31,7 +31,6 @@ import sys
 import argparse
 import signal
 import json
-import subprocess
 import time
 import win32gui
 from pathlib import Path
@@ -101,6 +100,7 @@ def load_state() -> dict:
 _shutdown_requested = False
 _publisher_ref = None
 _agent_ref = None
+_instance_guards = []
 
 
 def _on_signal(signum, frame):
@@ -453,7 +453,15 @@ def main():
 
     if args.agent_ui:
         from src.agent.admin.gui import LocalAgentClient, run_native_admin
+        from src.agent.admin.launcher import ensure_agent_backend
         from src.agent.config import load_config
+        from src.agent.single_instance import SingleInstance
+        from src.agent.version import AGENT_VERSION
+
+        guard = SingleInstance("WechatPublisherAgent.UI")
+        if not guard.acquire():
+            return 0
+        _instance_guards.append(guard)
 
         config, _ = load_config(args.agent_config)
         base_url = (
@@ -461,23 +469,40 @@ def main():
             f"{config.runtime.local_admin_port}"
         )
         client = LocalAgentClient(base_url)
-        if not client.wait_until_ready(0.5):
-            if getattr(sys, "frozen", False):
-                command = [sys.executable, "--agent"]
-                working_directory = str(Path(sys.executable).parent)
-            else:
-                command = [sys.executable, str(Path(__file__).resolve()), "--agent"]
-                working_directory = str(Path(__file__).resolve().parent)
-            subprocess.Popen(
-                command,
-                cwd=working_directory,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                close_fds=True,
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--agent"]
+            working_directory = str(Path(sys.executable).parent)
+        else:
+            command = [sys.executable, str(Path(__file__).resolve()), "--agent"]
+            working_directory = str(Path(__file__).resolve().parent)
+        if args.agent_config:
+            command.extend(["--agent-config", args.agent_config])
+        try:
+            ensure_agent_backend(
+                client,
+                expected_version=AGENT_VERSION,
+                command=command,
+                working_directory=working_directory,
             )
+        except Exception as error:
+            import tkinter as tk
+            from tkinter import messagebox
+
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("无法启动微信小助手", str(error), parent=root)
+            root.destroy()
+            return 1
         return run_native_admin(base_url)
 
     if args.agent:
         from src.agent import PublisherAgentApp
+        from src.agent.single_instance import SingleInstance
+
+        guard = SingleInstance("WechatPublisherAgent.Backend")
+        if not guard.acquire():
+            return 0
+        _instance_guards.append(guard)
 
         _agent_ref = PublisherAgentApp(config_path=args.agent_config)
         _agent_ref.run_forever()

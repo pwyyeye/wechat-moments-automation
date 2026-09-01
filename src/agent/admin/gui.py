@@ -33,6 +33,16 @@ class LocalAgentClient:
                 time.sleep(0.25)
         return False
 
+    def wait_until_stopped(self, timeout: float = 15.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                self.health()
+            except Exception:
+                return True
+            time.sleep(0.25)
+        return False
+
     def health(self) -> dict:
         return self._request("GET", "/api/health")
 
