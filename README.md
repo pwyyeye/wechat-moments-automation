@@ -2,8 +2,8 @@
 
 版本无关的 PC 微信朋友圈自动化。事件驱动架构 + 语义级定位 + 可持久化的多数据源 Agent。
 
-[![Version](https://img.shields.io/badge/version-0.6.5-blue)]()
-[![Tests](https://img.shields.io/badge/tests-187%20passed-brightgreen)]()
+[![Version](https://img.shields.io/badge/version-0.6.6-blue)]()
+[![Tests](https://img.shields.io/badge/tests-191%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![.NET](https://img.shields.io/badge/.NET-8.0-purple)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
@@ -79,6 +79,13 @@ Agent 领单前要求桌面可交互且未锁屏、微信正在运行且已登�
 | **版本追踪** | 从 PE 头读取微信版本，变化时自动重建模板库 |
 | **任务持久** | Agent 侧 SQLite 账本 + 事务化 outbox，重启不丢状态；核心侧 `state.json` 记录每日计数与历史 |
 | **通知系统** | Telegram Bot + 邮件（SMTP）+ Windows 系统通知 |
+
+### Agent 0.6.6 新增
+
+- 兼容微信 4.x 无障碍控件树不暴露导航名称的情况：悬停视觉候选并用 OCR 读取中文 Tooltip。
+- Tooltip“朋友圈”优先于历史模板名称，修复朋友圈直达图标被误判成“发现”的问题。
+- 点击任何导航候选后先检查独立朋友圈窗口，仅在确认进入“发现”时继续查找二级入口。
+- 导航诊断日志记录模板、置信度、Tooltip、动作与坐标，便于定位不同微信界面。
 
 ### Agent 0.6.5 新增
 

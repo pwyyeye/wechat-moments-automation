@@ -1,12 +1,16 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import cv2
 import numpy as np
 
 from src.agent.environment import (
+    _classify_navigation_candidate,
+    _locate_icon_candidates,
     _locate_moments_icon,
     _moments_window_ready,
+    _tooltip_label_from_blocks,
     prepare_moments_window,
 )
 
@@ -32,6 +36,38 @@ def test_locate_moments_icon_rejects_low_confidence_screen() -> None:
     template = np.full((40, 40, 3), 255, dtype=np.uint8)
 
     assert _locate_moments_icon(screen, template) is None
+
+
+def test_locate_icon_candidates_returns_distinct_hover_targets() -> None:
+    template = np.full((40, 40, 3), 220, dtype=np.uint8)
+    cv2.circle(template, (20, 20), 12, (40, 40, 40), 3)
+    cv2.line(template, (20, 8), (28, 28), (40, 40, 40), 3)
+    screen = np.full((300, 200, 3), 220, dtype=np.uint8)
+    screen[50:90, 60:100] = template
+    screen[180:220, 60:100] = template
+
+    candidates = _locate_icon_candidates(screen, template, limit=5)
+
+    assert any(abs(x - 80) <= 2 and abs(y - 70) <= 2 for x, y, _ in candidates)
+    assert any(abs(x - 80) <= 2 and abs(y - 200) <= 2 for x, y, _ in candidates)
+
+
+def test_hover_tooltip_overrides_historical_template_role() -> None:
+    assert _classify_navigation_candidate("discover", "朋友圈", 0.98) == "moments"
+    assert _classify_navigation_candidate("moments", "发现", 0.98) == "discover"
+
+
+def test_unverified_low_confidence_navigation_candidate_is_rejected() -> None:
+    assert _classify_navigation_candidate("discover", None, 0.70) is None
+
+
+def test_tooltip_label_is_extracted_from_confident_ocr_blocks() -> None:
+    blocks = [
+        SimpleNamespace(text="通讯录", confidence=0.99),
+        SimpleNamespace(text=" 朋 友 圈 ", confidence=0.95),
+    ]
+
+    assert _tooltip_label_from_blocks(blocks) == "朋友圈"
 
 
 def test_bundled_direct_and_discover_navigation_templates_are_loadable() -> None:

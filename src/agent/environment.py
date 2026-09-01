@@ -52,6 +52,8 @@ def _locate_moments_icon(
     screen: Any,
     template: Any,
     threshold: float = 0.78,
+    *,
+    require_unique: bool = True,
 ) -> tuple[int, int, float] | None:
     """Locate the distinctive Moments icon inside a pre-cropped nav region."""
     import cv2
@@ -83,10 +85,132 @@ def _locate_moments_icon(
         max(0, left - width):min(competing.shape[1], left + width),
     ] = -1
     second_score = cv2.minMaxLoc(competing)[1]
-    if score - second_score < 0.05:
+    if require_unique and score - second_score < 0.05:
         logger.warning("朋友圈图标匹配不唯一: %.3f / %.3f", score, second_score)
         return None
     return left + width // 2, top + height // 2, float(score)
+
+
+def _locate_icon_candidates(
+    screen: Any,
+    template: Any,
+    threshold: float = 0.30,
+    limit: int = 5,
+) -> list[tuple[int, int, float]]:
+    """Return distinct visual candidates that can be verified by a tooltip."""
+    import cv2
+
+    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+    screen_edges = cv2.Canny(screen_gray, 50, 150)
+    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    raw: list[tuple[int, int, float]] = []
+    for scale in (0.3, 0.4, 0.5, 0.6, 0.75, 0.85, 1.0, 1.15, 1.25, 1.5, 1.75, 2.0):
+        width = max(12, int(template_gray.shape[1] * scale))
+        height = max(12, int(template_gray.shape[0] * scale))
+        if width >= screen_gray.shape[1] or height >= screen_gray.shape[0]:
+            continue
+        resized = cv2.resize(template_gray, (width, height), interpolation=cv2.INTER_AREA)
+        edges = cv2.Canny(resized, 50, 150)
+        scores = cv2.matchTemplate(screen_edges, edges, cv2.TM_CCOEFF_NORMED)
+        for _ in range(3):
+            _, score, _, location = cv2.minMaxLoc(scores)
+            if score < threshold:
+                break
+            left, top = location
+            raw.append((left + width // 2, top + height // 2, float(score)))
+            scores[
+                max(0, top - height):min(scores.shape[0], top + height),
+                max(0, left - width):min(scores.shape[1], left + width),
+            ] = -1
+
+    distinct: list[tuple[int, int, float]] = []
+    for candidate in sorted(raw, reverse=True, key=lambda item: item[2]):
+        x, y, _ = candidate
+        if any(abs(x - seen_x) < 18 and abs(y - seen_y) < 18 for seen_x, seen_y, _ in distinct):
+            continue
+        distinct.append(candidate)
+        if len(distinct) >= limit:
+            break
+    return distinct
+
+
+def _classify_navigation_candidate(
+    template_role: str,
+    tooltip_label: str | None,
+    score: float,
+) -> str | None:
+    """Prefer the hover tooltip over historical template naming."""
+    if tooltip_label == "朋友圈":
+        return "moments"
+    if tooltip_label == "发现":
+        return "discover"
+    if score >= 0.78 and template_role in {"moments", "discover"}:
+        return template_role
+    return None
+
+
+def _tooltip_label_from_blocks(blocks: Any) -> str | None:
+    """Extract a supported navigation label from OCR blocks near the cursor."""
+    for block in blocks:
+        if getattr(block, "confidence", 0.0) < 0.5:
+            continue
+        text = "".join(str(getattr(block, "text", "")).split())
+        if "朋友圈" in text:
+            return "朋友圈"
+        if text == "发现" or text.endswith("发现"):
+            return "发现"
+    return None
+
+
+def _read_hover_tooltip(
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    match: tuple[int, int, float],
+    baseline: Any | None = None,
+) -> str | None:
+    """Read the Qt-rendered navigation tooltip after hovering a candidate."""
+    import numpy as np
+    from PIL import ImageGrab
+
+    from .wechat_identity import _get_identity_ocr_engine
+
+    x, y, _ = match
+    time.sleep(1.0)
+    tooltip_box = (
+        max(left, left + x - 24),
+        max(top, top + y - 72),
+        min(right, left + x + 260),
+        min(bottom, top + y + 96),
+    )
+    if tooltip_box[2] <= tooltip_box[0] or tooltip_box[3] <= tooltip_box[1]:
+        return None
+    try:
+        image = np.array(ImageGrab.grab(bbox=tooltip_box, all_screens=True))
+        engine = _get_identity_ocr_engine()
+        blocks = engine.recognize(image)
+        label = _tooltip_label_from_blocks(blocks)
+        if label and baseline is not None:
+            crop_left = tooltip_box[0] - left
+            crop_top = tooltip_box[1] - top
+            crop_right = tooltip_box[2] - left
+            crop_bottom = tooltip_box[3] - top
+            before_blocks = engine.recognize(
+                baseline[crop_top:crop_bottom, crop_left:crop_right]
+            )
+            if _tooltip_label_from_blocks(before_blocks) == label:
+                logger.info("微信导航 Tooltip 文本在悬停前已存在，拒绝作为语义确认: %s", label)
+                label = None
+        logger.info(
+            "微信导航 Tooltip 识别: label=%s texts=%s",
+            label or "unknown",
+            [str(getattr(block, "text", ""))[:32] for block in blocks[:8]],
+        )
+        return label
+    except Exception as error:
+        logger.warning("微信导航 Tooltip 识别失败: %s", error)
+        return None
 
 
 @contextmanager
@@ -115,7 +239,8 @@ def _open_moments_by_template() -> bool:
     import win32con
     import win32gui
     from PIL import ImageGrab
-    from .wechat_identity import find_wechat_main_window, _try_activate_window
+
+    from .wechat_identity import _try_activate_window, find_wechat_main_window
 
     hwnd = find_wechat_main_window()
     if hwnd is None:
@@ -183,17 +308,21 @@ def _open_moments_by_template() -> bool:
             )
             return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
+        win32api.SetCursorPos(
+            (min(right - 1, left + 300), min(bottom - 1, top + 24))
+        )
+        time.sleep(0.1)
         screenshot = capture()
+        get_dpi = getattr(ctypes.windll.user32, "GetDpiForWindow", None)
+        dpi = get_dpi(hwnd) if get_dpi else 96
+        nav_width = min(
+            screenshot.shape[1],
+            max(80, round(74 * min(max((dpi or 96) / 96, 0.75), 3.0))),
+        )
         rail = screenshot[
             :int(screenshot.shape[0] * 0.82),
-            :max(80, int(screenshot.shape[1] * 0.12)),
+            :nav_width,
         ]
-        direct_match = _locate_moments_icon(rail, moments_template)
-        if direct_match is not None:
-            click_match(left, top, direct_match)
-            logger.info("已通过直接入口打开朋友圈，匹配置信度 %.3f", direct_match[2])
-            return True
-
         initial_panel = screenshot[
             :int(screenshot.shape[0] * 0.48),
             :max(180, int(screenshot.shape[1] * 0.32)),
@@ -208,14 +337,92 @@ def _open_moments_by_template() -> bool:
                 "已从当前发现页打开朋友圈，匹配置信度 %.3f",
                 nested_match[2],
             )
-            return True
+            return _wait_for_moments_window(3.0)
 
-        discover_match = _locate_moments_icon(rail, discover_template)
-        if discover_match is None:
+        # WeChat 4.x renders navigation as an unnamed canvas. Historical icon
+        # templates can also swap visual meaning between releases, so hover the
+        # strongest candidates and let the Chinese tooltip decide the action.
+        candidates: list[tuple[float, str, tuple[int, int, float]]] = []
+        for template_role, template in (
+            ("moments", moments_template),
+            ("discover", discover_template),
+        ):
+            matches = _locate_icon_candidates(
+                rail,
+                template,
+                threshold=0.30,
+                limit=5,
+            )
+            for match in matches:
+                candidates.append((match[2], template_role, match))
+        candidates.sort(reverse=True, key=lambda item: item[0])
+
+        navigation: tuple[str, tuple[int, int, float], str | None] | None = None
+        visited: list[tuple[int, int]] = []
+        for score, template_role, match in candidates[:8]:
+            x, y, _ = match
+            if any(abs(x - seen_x) < 14 and abs(y - seen_y) < 14 for seen_x, seen_y in visited):
+                continue
+            visited.append((x, y))
+            # Moving away first retriggers Qt's hover timer when the cursor was
+            # already left on the same icon by a previous preflight.
+            win32api.SetCursorPos(
+                (
+                    min(right - 1, left + nav_width + 24),
+                    min(bottom - 1, max(top, top + y)),
+                )
+            )
+            time.sleep(0.08)
+            win32api.SetCursorPos((left + x, top + y))
+            tooltip_label = _read_hover_tooltip(
+                left,
+                top,
+                right,
+                bottom,
+                match,
+                screenshot,
+            )
+            action = _classify_navigation_candidate(template_role, tooltip_label, score)
+            logger.info(
+                "微信导航候选: template=%s score=%.3f tooltip=%s action=%s point=(%s,%s)",
+                template_role,
+                score,
+                tooltip_label or "unknown",
+                action or "rejected",
+                x,
+                y,
+            )
+            if action is not None:
+                navigation = action, match, tooltip_label
+                break
+
+        if navigation is None:
             logger.error("未找到高置信度的朋友圈或发现图标，拒绝点击")
             return False
-        click_match(left, top, discover_match)
-        logger.info("已打开微信发现页，匹配置信度 %.3f", discover_match[2])
+
+        action, navigation_match, tooltip_label = navigation
+        click_match(left, top, navigation_match)
+
+        # The icon previously named discover_tab.png is a direct Moments entry
+        # in some WeChat 4.x builds. Always check the resulting window before
+        # assuming that a nested Discover page must be traversed.
+        if _wait_for_moments_window(3.0):
+            logger.info(
+                "已打开朋友圈: tooltip=%s template=%s score=%.3f",
+                tooltip_label or "unknown",
+                action,
+                navigation_match[2],
+            )
+            return True
+        if action == "moments":
+            logger.error("Tooltip 已确认朋友圈，但点击后未检测到朋友圈窗口")
+            return False
+
+        logger.info(
+            "已打开微信发现页: tooltip=%s score=%.3f",
+            tooltip_label or "unknown",
+            navigation_match[2],
+        )
 
         # The submenu is rendered asynchronously and may shift with DPI or
         # window size, so locate its semantic icon instead of using a point.
@@ -237,7 +444,7 @@ def _open_moments_by_template() -> bool:
                 "已通过发现页打开朋友圈，匹配置信度 %.3f",
                 nested_match[2],
             )
-            return True
+            return _wait_for_moments_window(3.0)
 
     logger.error("发现页已打开，但未找到高置信度朋友圈图标")
     return False
@@ -253,7 +460,7 @@ def _wait_for_moments_window(timeout: float) -> bool:
 
 
 def prepare_moments_window(timeout: float = 10.0) -> bool:
-    """Open the Moments list without initializing OCR or entering compose."""
+    """Open the Moments list without entering the compose flow."""
     deadline = time.monotonic() + max(1.0, timeout)
     if not is_interactive_session() or not is_desktop_unlocked():
         return False
@@ -270,9 +477,7 @@ def prepare_moments_window(timeout: float = 10.0) -> bool:
 
     if time.monotonic() >= deadline:
         return False
-    if not _open_moments_by_template():
-        return False
-    return _wait_for_moments_window(max(0.1, deadline - time.monotonic()))
+    return _open_moments_by_template()
 
 
 def is_interactive_session() -> bool:
