@@ -9,6 +9,7 @@ import httpx
 from ..config import AgentConfig, SourceConfig
 from ..credential_store import CredentialStore
 from ..models import AgentCapabilities, AgentSnapshot, ClaimResponse, Lease, TaskEvent
+from ..version import AGENT_VERSION
 from .base import SourceError, SourceMeta
 
 
@@ -144,7 +145,7 @@ class StandardHttpSource:
                 "agentId": self.agent_config.agent.id,
                 "instanceId": self.instance_id,
                 "displayName": self.agent_config.agent.display_name,
-                "agentVersion": "0.4.2",
+                "agentVersion": AGENT_VERSION,
                 "os": f"{platform.system()} {platform.release()}",
                 "interactiveSession": snapshot.interactive_session,
                 "desktopUnlocked": snapshot.desktop_unlocked,

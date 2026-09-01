@@ -360,6 +360,7 @@ class EventDrivenPublisher:
                 final_click_intent=True,
             )
         step_times['publish'] = time.time() - t0
+        self._cleanup_after_confirmed_publish()
 
         elapsed = time.time() - start_time
         result = PublishResult(
@@ -377,6 +378,14 @@ class EventDrivenPublisher:
 
         logger.info(f"✅ 发布成功 ({elapsed:.0f}s)")
         return result
+
+    def _cleanup_after_confirmed_publish(self) -> None:
+        """Clean up auxiliary UI without changing an already confirmed result."""
+        try:
+            if not self.operator.close_moments_window():
+                logger.warning("发布已确认，但朋友圈窗口自动关闭失败")
+        except Exception:
+            logger.exception("发布已确认，但清理朋友圈窗口时发生异常")
 
     def publish_batch(self, tasks: List[PublishTask]) -> List[PublishResult]:
         """批量发布"""

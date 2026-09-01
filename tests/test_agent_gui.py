@@ -13,7 +13,7 @@ def test_native_gui_client_reads_loopback_status_without_browser(monkeypatch):
         captured.update(method=method, url=url, kwargs=kwargs)
         return httpx.Response(
             200,
-            json={"agent": {"version": "0.4.2"}, "sources": []},
+            json={"agent": {"version": "0.4.3"}, "sources": []},
             request=httpx.Request(method, url),
         )
 
@@ -22,7 +22,7 @@ def test_native_gui_client_reads_loopback_status_without_browser(monkeypatch):
 
     status = client.status()
 
-    assert status["agent"]["version"] == "0.4.2"
+    assert status["agent"]["version"] == "0.4.3"
     assert captured["method"] == "GET"
     assert captured["url"] == "http://127.0.0.1:17821/api/status"
     assert captured["kwargs"]["headers"]["X-Local-Agent-Action"] == "confirmed"
@@ -111,6 +111,32 @@ def test_native_gui_client_queries_filtered_logs(monkeypatch):
     }
 
 
+def test_native_gui_client_creates_local_schedule(monkeypatch):
+    captured = {}
+
+    def request(method, url, **kwargs):
+        captured.update(method=method, url=url, kwargs=kwargs)
+        return httpx.Response(
+            201,
+            json={"task_id": "local-1", "state": "pending"},
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr("src.agent.admin.gui.httpx.request", request)
+    payload = {
+        "text": "定时文案",
+        "imagePaths": ["D:/pictures/one.png"],
+        "scheduledAt": "2026-09-01T18:30:00+08:00",
+    }
+
+    result = LocalAgentClient("http://127.0.0.1:17821").create_local_schedule(payload)
+
+    assert result["state"] == "pending"
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/api/local-schedules")
+    assert captured["kwargs"]["json"] == payload
+
+
 def test_operator_entry_points_use_native_control_panel():
     root = Path(__file__).resolve().parents[1]
     installer = (root / "packaging" / "installer.iss").read_text(encoding="utf-8")
@@ -118,5 +144,10 @@ def test_operator_entry_points_use_native_control_panel():
     app = (root / "src" / "agent" / "app.py").read_text(encoding="utf-8")
 
     assert 'Parameters: "--agent-ui"' in installer
-    assert '-Argument "--agent"' in startup
+    assert '#define AppName "微信小助手"' in installer
+    assert "OutputBaseFilename=微信小助手-{#AppVersion}-setup" in installer
+    assert '" --agent' in startup
+    assert "CurrentVersion\\Run" in startup
+    assert 'ValueName: "WechatPublisherAgent"' in installer
+    assert "Register-ScheduledTask" not in startup
     assert "webbrowser" not in app

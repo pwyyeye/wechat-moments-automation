@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auto-content.local/contracts/publisher-agent/v2/heartbeat.schema.json",
+  "type": "object",
+  "required": ["protocolVersion", "agent", "executors", "accounts", "occurredAt"],
+  "properties": {
+    "protocolVersion": { "const": "2.0" },
+    "agent": {
+      "type": "object",
+      "required": ["agentId", "instanceId", "displayName", "agentVersion", "os", "interactiveSession", "desktopUnlocked"],
+      "properties": {
+        "agentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "instanceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "agentVersion": { "type": "string", "minLength": 1, "maxLength": 50 },
+        "os": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "interactiveSession": { "type": "boolean" },
+        "desktopUnlocked": { "type": "boolean" }
+      }
+    },
+    "executors": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["executorInstanceId", "providerKey", "executionMode", "status", "capabilities"],
+        "properties": {
+          "executorInstanceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "providerKey": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "executionMode": { "enum": ["windows_ui", "browser_bridge"] },
+          "profileId": { "type": ["string", "null"], "maxLength": 128 },
+          "connectorVersion": { "type": ["string", "null"], "maxLength": 50 },
+          "status": { "enum": ["ready", "degraded", "offline"] },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["platform", "operations", "contentTypes"],
+              "properties": {
+                "platform": { "type": "string", "minLength": 1, "maxLength": 50 },
+                "operations": {
+                  "type": "array",
+                  "items": { "enum": ["publish", "create_draft"] }
+                },
+                "contentTypes": {
+                  "type": "array",
+                  "items": { "enum": ["short_text", "image_text", "article", "video"] }
+                }
+              }
+            }
+          },
+          "lastErrorCode": { "type": ["string", "null"], "maxLength": 100 },
+          "lastErrorMessage": { "type": ["string", "null"], "maxLength": 1000 }
+        }
+      }
+    },
+    "accounts": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "required": ["executorInstanceId", "platform", "accountStableId", "nickname", "authState", "status"],
+        "properties": {
+          "executorInstanceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "platform": { "type": "string", "minLength": 1, "maxLength": 50 },
+          "accountStableId": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "nickname": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "accountKey": { "type": ["string", "null"], "maxLength": 255 },
+          "profileId": { "type": ["string", "null"], "maxLength": 128 },
+          "authState": { "enum": ["authenticated", "unauthenticated", "expired", "unknown"] },
+          "status": { "enum": ["ready", "degraded", "offline"] }
+        }
+      }
+    },
+    "occurredAt": { "type": "string", "format": "date-time" }
+  }
+}

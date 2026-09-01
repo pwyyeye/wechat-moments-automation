@@ -1,0 +1,15 @@
+{
+  "protocolVersion": "2.0",
+  "agentId": "agent-windows-01",
+  "instanceId": "process-01",
+  "executorInstanceId": "wechatsync:chrome-profile-a",
+  "currentAccounts": [
+    {
+      "platform": "zhihu",
+      "accountStableId": "zhihu-user-42",
+      "profileId": "chrome-profile-a"
+    }
+  ],
+  "maxTasks": 1,
+  "requestedLeaseSeconds": 180
+}

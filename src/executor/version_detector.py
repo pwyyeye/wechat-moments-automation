@@ -14,11 +14,11 @@
 Author: 版本无关微信自动化系统
 """
 
-import logging
 import json
-from typing import Optional, Tuple
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -58,12 +58,17 @@ class VersionDetector:
     """
 
     def __init__(self, wechat_dir: str = None):
+        self._wechat_executable: Optional[Path] = None
+        self._version_dir: Optional[Path] = None
         if wechat_dir:
             self._wechat_dir = wechat_dir
         else:
-            from .wechat_discovery import discover_from_window
-            env = discover_from_window()
+            from .wechat_discovery import discover_from_window, discover_wechat
+            env = discover_from_window() or discover_wechat()
             self._wechat_dir = str(env.install_dir) if env else ""
+            if env:
+                self._wechat_executable = env.executable
+                self._version_dir = env.version_dir
         self._last_known_version: Optional[WeChatVersion] = None
         self._load_last_version()
 
@@ -74,37 +79,53 @@ class VersionDetector:
         从微信 PE 文件读取版本号。
 
         检测顺序：
-          1. [WeChat]_x64/WeChat.exe
-          2. WeChat.exe
-          3. WeChatWin.dll
+          1. 当前运行微信进程的可执行文件
+          2. 安装目录和版本目录中的 Weixin.exe / WeChat.exe
+          3. WeChatWin.dll / Weixin.dll
         """
         wechat_path = Path(self._wechat_dir)
 
-        candidates = [
-            wechat_path / "[WeChat]_x64" / "WeChat.exe",
-            wechat_path / "[WeChat]" / "WeChat.exe",
-            wechat_path / "WeChat.exe",
-        ]
+        search_roots = [wechat_path]
+        if self._version_dir and self._version_dir != wechat_path:
+            search_roots.append(self._version_dir)
 
-        for exe_path in candidates:
+        candidates = []
+        if self._wechat_executable:
+            candidates.append(self._wechat_executable)
+        for root in search_roots:
+            candidates.extend([
+                root / "Weixin.exe",
+                root / "WeChat.exe",
+                root / "[WeChat]_x64" / "WeChat.exe",
+                root / "[WeChat]" / "WeChat.exe",
+            ])
+
+        for exe_path in dict.fromkeys(candidates):
             if exe_path.exists():
                 version = self._read_pe_version(str(exe_path))
                 if version:
                     return version
 
         # 备选：尝试从 DLL 读取
-        dll_candidates = [
-            wechat_path / "[WeChat]_x64" / "WeChatWin.dll",
-            wechat_path / "WeChatWin.dll",
-        ]
-        for dll_path in dll_candidates:
+        dll_candidates = []
+        for root in search_roots:
+            dll_candidates.extend([
+                root / "Weixin.dll",
+                root / "WeChatWin.dll",
+                root / "[WeChat]_x64" / "WeChatWin.dll",
+            ])
+        for dll_path in dict.fromkeys(dll_candidates):
             if dll_path.exists():
                 version = self._read_pe_version(str(dll_path))
                 if version:
                     return version
 
         # 回退：扫描版本子目录名
-        return self._detect_from_dir_name(wechat_path)
+        for root in search_roots:
+            version = self._detect_from_dir_name(root)
+            if version:
+                return version
+        return None
 
     def is_version_changed(self) -> bool:
         """检测微信版本是否与上次不同"""
@@ -260,6 +281,8 @@ class VersionDetector:
         """从版本子目录名检测版本"""
         import re
 
+        if not wechat_path.exists() or not wechat_path.is_dir():
+            return None
         for d in wechat_path.iterdir():
             if d.is_dir():
                 match = re.search(r'(\d+)\.(\d+)\.(\d+)\.(\d+)', d.name)

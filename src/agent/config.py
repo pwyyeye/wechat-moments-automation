@@ -11,10 +11,11 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 DEFAULT_SOURCE_ID = "auto-content-production"
-DEFAULT_SOURCE_URL = (
+LEGACY_DEFAULT_SOURCE_URL = (
     "https://zcnvn9mqrac4.aiforce.cloud/app/app_17cxjhfjvpf/"
     "openapi/publisher-agent/v1"
 )
+DEFAULT_SOURCE_URL = LEGACY_DEFAULT_SOURCE_URL.removesuffix("/v1") + "/v2"
 
 
 def default_data_root() -> Path:
@@ -75,7 +76,7 @@ class SourceConfig(BaseModel):
 
     id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
     name: str = Field(min_length=1, max_length=255)
-    type: Literal["standard-http-v1"] = "standard-http-v1"
+    type: Literal["standard-http-v1", "standard-http-v2"] = "standard-http-v1"
     base_url: HttpUrl = Field(alias="baseUrl")
     enabled: bool = True
     weight: int = Field(default=1, ge=1, le=10)
@@ -117,6 +118,50 @@ class RuntimeConfig(BaseModel):
     local_admin_port: int = Field(default=17821, alias="localAdminPort", ge=1024, le=65535)
 
 
+class WechatSyncProfileConfig(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+    name: str = Field(min_length=1, max_length=255)
+    enabled: bool = True
+    bridge_host: Literal["127.0.0.1"] = Field(
+        default="127.0.0.1",
+        alias="bridgeHost",
+    )
+    bridge_port: int = Field(alias="bridgePort", ge=1024, le=65534)
+    token_ref: str = Field(alias="tokenRef")
+    platforms: list[Literal["zhihu", "juejin"]] = Field(
+        default_factory=lambda: ["zhihu", "juejin"],
+    )
+    chrome_executable: str | None = Field(default=None, alias="chromeExecutable")
+    user_data_dir: str | None = Field(default=None, alias="userDataDir")
+    profile_directory: str | None = Field(default=None, alias="profileDirectory")
+    extension_path: str | None = Field(default=None, alias="extensionPath")
+    auto_launch: bool = Field(default=False, alias="autoLaunch")
+
+    @field_validator("token_ref")
+    @classmethod
+    def token_reference_uses_dpapi(cls, value):
+        if not value.startswith("dpapi://"):
+            raise ValueError("tokenRef must use dpapi://")
+        return value
+
+
+def default_wechat_sync_profiles() -> list[WechatSyncProfileConfig]:
+    return [
+        WechatSyncProfileConfig(
+            id="chrome-default",
+            name="Chrome 默认内容账号",
+            bridgePort=9527,
+            tokenRef="dpapi://wechatsync-chrome-default",
+        )
+    ]
+
+
 class AgentConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
@@ -124,6 +169,10 @@ class AgentConfig(BaseModel):
     agent: AgentIdentityConfig = Field(default_factory=AgentIdentityConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     sources: list[SourceConfig] = Field(default_factory=list)
+    wechat_sync_profiles: list[WechatSyncProfileConfig] = Field(
+        default_factory=default_wechat_sync_profiles,
+        alias="wechatSyncProfiles",
+    )
 
     @field_validator("sources")
     @classmethod
@@ -131,6 +180,17 @@ class AgentConfig(BaseModel):
         source_ids = [source.id for source in value]
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("source ids must be unique")
+        return value
+
+    @field_validator("wechat_sync_profiles")
+    @classmethod
+    def browser_profiles_are_unique(cls, value):
+        profile_ids = [profile.id for profile in value]
+        ports = [profile.bridge_port for profile in value if profile.enabled]
+        if len(profile_ids) != len(set(profile_ids)):
+            raise ValueError("WechatSync profile ids must be unique")
+        if len(ports) != len(set(ports)):
+            raise ValueError("enabled WechatSync bridge ports must be unique")
         return value
 
 
@@ -145,6 +205,7 @@ def default_source_config() -> SourceConfig:
             "id": DEFAULT_SOURCE_ID,
             "name": "智能内容运营平台",
             "baseUrl": base_url,
+            "type": "standard-http-v2" if base_url.rstrip("/").endswith("/v2") else "standard-http-v1",
             "accountKey": "wechat-main",
             "auth": {
                 "type": "bearer",
@@ -164,8 +225,11 @@ def load_config(path: Path | str | None = None) -> tuple[AgentConfig, Path]:
     if config_path.exists():
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         config = AgentConfig.model_validate(raw)
+        migrated = False
         if uses_default_location and not config.sources:
             config.sources.append(default_source_config())
+            migrated = True
+        if migrated:
             save_config(config, config_path)
         return config, config_path
 

@@ -85,17 +85,12 @@ class Operator:
 
     def find_moments_window(self) -> bool:
         """Find the separate Moments window used by desktop WeChat 4.x."""
-        from .wechat_discovery import WECHAT_PROCESS_NAMES, _get_process_name
-
         candidates = []
 
         def callback(hwnd, _):
             if not win32gui.IsWindowVisible(hwnd):
                 return
-            if _get_window_text(hwnd) != '朋友圈':
-                return
-            _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            if _get_process_name(pid) not in WECHAT_PROCESS_NAMES:
+            if not self._is_moments_window(hwnd):
                 return
             candidates.append(hwnd)
 
@@ -104,6 +99,45 @@ class Operator:
             return False
 
         self._moments_hwnd = candidates[0]
+        return True
+
+    def _is_moments_window(self, hwnd: int) -> bool:
+        """Verify an exact WeChat Moments window before acting on its handle."""
+        from .wechat_discovery import WECHAT_PROCESS_NAMES, _get_process_name
+
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return False
+        if _get_window_text(hwnd) != '朋友圈':
+            return False
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return _get_process_name(pid) in WECHAT_PROCESS_NAMES
+
+    def close_moments_window(self, timeout: float = 3.0) -> bool:
+        """Close only the separate Moments window after a confirmed publish."""
+        target = self._moments_hwnd
+        if not self._is_moments_window(target):
+            self._moments_hwnd = None
+            if not self.find_moments_window():
+                return True
+            target = self._moments_hwnd
+
+        if target == self._wechat_hwnd:
+            logger.error("拒绝关闭朋友圈窗口：目标与微信主窗口句柄相同")
+            return False
+
+        win32gui.PostMessage(target, win32con.WM_CLOSE, 0, 0)
+        deadline = time.monotonic() + max(timeout, 0.0)
+        while win32gui.IsWindow(target) and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+        if win32gui.IsWindow(target):
+            logger.warning(f"朋友圈窗口未在 {timeout:.1f}s 内关闭: hwnd={target}")
+            return False
+
+        self._moments_hwnd = None
+        if self._active_hwnd == target:
+            self._active_hwnd = self._wechat_hwnd
+        logger.info("已关闭发布完成后的朋友圈窗口")
         return True
 
     def ensure_window_active(self, hwnd: int = None) -> bool:

@@ -14,6 +14,8 @@ def build_publisher() -> EventDrivenPublisher:
     publisher._step_type_text = Mock(return_value=True)
     publisher._step_add_images = Mock(return_value=True)
     publisher._step_publish = Mock(return_value=True)
+    publisher.operator = Mock()
+    publisher.operator.close_moments_window.return_value = True
     return publisher
 
 
@@ -27,6 +29,7 @@ def test_publish_defaults_to_stopping_before_final_click() -> None:
     assert not result.published
     publisher._step_publish.assert_not_called()
     publisher._pre_check.assert_called_once_with(will_publish=False)
+    publisher.operator.close_moments_window.assert_not_called()
 
 
 def test_publish_requires_explicit_confirmation_for_final_click() -> None:
@@ -48,6 +51,34 @@ def test_publish_requires_explicit_confirmation_for_final_click() -> None:
     before_final_click.assert_called_once_with()
     publisher._step_publish.assert_called_once_with("确认发布")
     publisher._pre_check.assert_called_once_with(will_publish=True)
+    publisher.operator.close_moments_window.assert_called_once_with()
+
+
+def test_uncertain_publish_result_preserves_the_moments_window() -> None:
+    publisher = build_publisher()
+    publisher._step_publish.return_value = False
+
+    result = publisher.publish(
+        PublishTask(text="结果待确认", confirm_publish=True)
+    )
+
+    assert not result.success
+    assert result.final_click_intent
+    publisher.operator.close_moments_window.assert_not_called()
+
+
+def test_cleanup_failure_does_not_change_a_confirmed_publish_result() -> None:
+    publisher = build_publisher()
+    publisher.operator.close_moments_window.side_effect = RuntimeError(
+        "close failed"
+    )
+
+    result = publisher.publish(
+        PublishTask(text="已经发布", confirm_publish=True)
+    )
+
+    assert result.success
+    assert result.published
 
 
 def test_publish_stops_when_final_click_intent_cannot_be_persisted() -> None:

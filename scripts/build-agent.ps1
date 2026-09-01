@@ -37,7 +37,15 @@ try {
     $packagedAgent = Join-Path $repoRoot "dist\WechatPublisherAgent\WechatPublisherAgent.exe"
     $ocrStdout = Join-Path $repoRoot "build\ocr-runtime.stdout.log"
     $ocrStderr = Join-Path $repoRoot "build\ocr-runtime.stderr.log"
-    $ocrCheck = Start-Process -FilePath $packagedAgent -ArgumentList "--verify-ocr-runtime" -PassThru -WindowStyle Hidden -RedirectStandardOutput $ocrStdout -RedirectStandardError $ocrStderr
+    $ocrCache = Join-Path $env:TEMP ("wechat-agent-ocr-build-check-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $ocrCache | Out-Null
+    $previousOcrCache = $env:PADDLE_PDX_CACHE_HOME
+    $env:PADDLE_PDX_CACHE_HOME = $ocrCache
+    try {
+        $ocrCheck = Start-Process -FilePath $packagedAgent -ArgumentList "--verify-ocr-runtime" -PassThru -WindowStyle Hidden -RedirectStandardOutput $ocrStdout -RedirectStandardError $ocrStderr
+    } finally {
+        $env:PADDLE_PDX_CACHE_HOME = $previousOcrCache
+    }
     if (-not $ocrCheck.WaitForExit(120000)) {
         Stop-Process -Id $ocrCheck.Id -Force
         throw "Packaged OCR runtime check timed out."
@@ -55,6 +63,10 @@ try {
     if (($null -ne $ocrExitCode -and $ocrExitCode -ne 0) -or -not $ocrReady) {
         $ocrError = Get-Content -LiteralPath $ocrStderr -Raw -ErrorAction SilentlyContinue
         throw "Packaged OCR runtime check failed with exit code $ocrExitCode.`n$ocrError"
+    }
+    $downloadedModels = Get-ChildItem -LiteralPath $ocrCache -File -Recurse -ErrorAction SilentlyContinue
+    if ($downloadedModels) {
+        throw "Packaged OCR runtime wrote model files into the empty test cache; offline bundling is incomplete."
     }
 
     $compilerCandidates = @(

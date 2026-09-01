@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auto-content.local/contracts/publisher-agent/v2/task.schema.json",
+  "type": "object",
+  "required": ["specVersion", "taskId", "idempotencyKey", "revision", "createdAt", "priority", "route", "content", "options", "schedule", "policy", "extensions"],
+  "properties": {
+    "specVersion": { "const": "content-publisher/task-v2" },
+    "taskId": { "type": "string", "minLength": 1 },
+    "idempotencyKey": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "priority": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "route": {
+      "type": "object",
+      "required": ["providerKey", "operation", "platform", "accountStableId"],
+      "properties": {
+        "providerKey": { "type": "string", "minLength": 1 },
+        "operation": { "enum": ["publish", "create_draft"] },
+        "platform": { "type": "string", "minLength": 1 },
+        "accountKey": { "type": ["string", "null"] },
+        "accountStableId": { "type": "string", "minLength": 1 },
+        "nickname": { "type": ["string", "null"] },
+        "profileId": { "type": ["string", "null"] },
+        "executorInstanceId": { "type": ["string", "null"] }
+      }
+    },
+    "content": {
+      "type": "object",
+      "required": ["media"],
+      "properties": {
+        "title": { "type": "string" },
+        "text": { "type": "string" },
+        "markdown": { "type": "string" },
+        "html": { "type": "string" },
+        "hashtags": { "type": "array", "items": { "type": "string" } },
+        "media": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["mediaId", "type", "mimeType", "fileName", "sizeBytes", "sha256", "downloadUrl"],
+            "properties": {
+              "mediaId": { "type": "string", "minLength": 1 },
+              "type": { "const": "image" },
+              "mimeType": { "enum": ["image/jpeg", "image/png"] },
+              "fileName": { "type": "string", "minLength": 1 },
+              "sizeBytes": { "type": "integer", "minimum": 1 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "width": { "type": "integer", "minimum": 1 },
+              "height": { "type": "integer", "minimum": 1 },
+              "downloadUrl": { "type": "string", "format": "uri" }
+            }
+          }
+        }
+      },
+      "anyOf": [
+        { "properties": { "text": {} }, "required": ["text"] },
+        { "properties": { "markdown": {} }, "required": ["markdown"] },
+        { "properties": { "html": {} }, "required": ["html"] }
+      ]
+    },
+    "options": { "type": "object" },
+    "schedule": {
+      "type": "object",
+      "required": ["notBefore", "expiresAt", "timezone", "misfirePolicy"],
+      "properties": {
+        "notBefore": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": ["string", "null"], "format": "date-time" },
+        "timezone": { "type": "string", "minLength": 1 },
+        "misfirePolicy": { "enum": ["skip", "publish_asap", "manual"] }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["maxPreActionAttempts", "completionStrategy"],
+      "properties": {
+        "maxPreActionAttempts": { "type": "integer", "minimum": 0 },
+        "completionStrategy": { "type": "string", "minLength": 1 }
+      }
+    },
+    "extensions": { "type": "object" }
+  }
+}

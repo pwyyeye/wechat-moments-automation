@@ -4,12 +4,13 @@
 
 Run `powershell -ExecutionPolicy Bypass -File scripts/build-agent.ps1`. The build is a PyInstaller `onedir` directory at `dist/WechatPublisherAgent`; it keeps native DLLs and OCR assets beside the executable instead of unpacking them on every launch.
 
-Compile `packaging/installer.iss` with Inno Setup after the onedir build. The installer targets the current user, registers a Task Scheduler `ONLOGON` task, and starts the Agent with `--agent`. It deliberately does not install a Windows Service because Session 0 cannot operate the signed-in user's WeChat desktop.
+Compile `packaging/installer.iss` with Inno Setup after the onedir build. The installer targets the current user, registers an `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` entry, and starts the Agent with `--agent`. It deliberately does not install a Windows Service because Session 0 cannot operate the signed-in user's WeChat desktop.
 
 ## Data and credentials
 
 - Non-sensitive configuration: `%LOCALAPPDATA%\WechatPublisherAgent\config.yaml`
 - SQLite ledger and Outbox: `%LOCALAPPDATA%\WechatPublisherAgent\data\agent.db`
+- Managed media for local schedules: `%LOCALAPPDATA%\WechatPublisherAgent\data\local-media`
 - DPAPI-encrypted source credentials: `%LOCALAPPDATA%\WechatPublisherAgent\credentials`
 - Rotating logs: `%LOCALAPPDATA%\WechatPublisherAgent\logs`
 
@@ -32,7 +33,7 @@ The uninstaller removes the executable and login task but preserves the data dir
 1. Confirm the local Outbox backlog is zero or the source credentials remain available.
 2. Keep the entire `%LOCALAPPDATA%\WechatPublisherAgent` directory.
 3. Install the newer onedir build over the prior version.
-4. Open **Wechat Publisher Agent** from the Start menu, verify Agent and WeChat versions, then test each source.
+4. Open **微信小助手** from the Start menu, verify Agent and WeChat versions, then test each source.
 5. Run the no-click environment preflight before allowing a production task.
 
 Protocol v1 permits additive optional fields. An Agent must reject an unknown required protocol version but ignore unknown optional fields.

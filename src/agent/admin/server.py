@@ -6,8 +6,15 @@ from typing import TYPE_CHECKING, Literal
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
+from ..version import AGENT_VERSION
 from .logs import read_recent_logs
-from .schemas import AgentIdentityUpdate, SourceUpsertRequest
+from .schemas import (
+    AgentIdentityUpdate,
+    LocalScheduleCreateRequest,
+    LocalScheduleUpdateRequest,
+    SourceUpsertRequest,
+    WechatSyncProfileUpsertRequest,
+)
 
 if TYPE_CHECKING:
     from ..app import PublisherAgentApp
@@ -17,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 def create_admin_app(agent: "PublisherAgentApp") -> FastAPI:
     app = FastAPI(
-        title="WeChat Publisher Agent Local Admin",
-        version="0.4.2",
+        title="WeChat Assistant Local Admin",
+        version=AGENT_VERSION,
         docs_url="/api/docs",
         redoc_url=None,
     )
@@ -109,6 +116,82 @@ def create_admin_app(agent: "PublisherAgentApp") -> FastAPI:
                 {"code": "PREFLIGHT_FAILED", "message": str(error)},
             ) from error
 
+    @app.get("/api/connectors/wechatsync")
+    def wechat_sync_connectors():
+        return agent.connector_registry.status()
+
+    @app.post("/api/connectors/wechatsync", status_code=201)
+    def add_wechat_sync_profile(body: WechatSyncProfileUpsertRequest):
+        try:
+            agent.upsert_wechat_sync_profile(body, create_only=True)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        return {"saved": True, "profileId": body.id}
+
+    @app.put("/api/connectors/wechatsync/{profile_id}")
+    def update_wechat_sync_profile(
+        profile_id: str,
+        body: WechatSyncProfileUpsertRequest,
+    ):
+        if body.id != profile_id:
+            raise HTTPException(422, "profile id in path and body must match")
+        try:
+            agent.upsert_wechat_sync_profile(body, create_only=False)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+        return {"saved": True, "profileId": body.id}
+
+    @app.delete("/api/connectors/wechatsync/{profile_id}")
+    def delete_wechat_sync_profile(profile_id: str):
+        try:
+            agent.delete_wechat_sync_profile(profile_id)
+        except KeyError as error:
+            raise HTTPException(404, str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
+        return {"deleted": True, "profileId": profile_id}
+
+    @app.post("/api/connectors/wechatsync/{profile_id}/test")
+    def test_wechat_sync_profile(profile_id: str):
+        try:
+            return agent.connector_registry.test(profile_id)
+        except KeyError as error:
+            raise HTTPException(404, str(error)) from error
+        except Exception as error:
+            raise HTTPException(
+                502,
+                {"code": "CONNECTOR_UNAVAILABLE", "message": str(error)},
+            ) from error
+
+    @app.post("/api/connectors/wechatsync/{profile_id}/launch")
+    def launch_wechat_sync_profile(
+        profile_id: str,
+        x_local_agent_action: str | None = Header(default=None),
+    ):
+        if x_local_agent_action != "confirmed":
+            raise HTTPException(403, "缺少本机操作确认")
+        try:
+            return agent.connector_registry.launch(profile_id)
+        except KeyError as error:
+            raise HTTPException(404, str(error)) from error
+        except Exception as error:
+            raise HTTPException(
+                409,
+                {"code": getattr(error, "code", "CONNECTOR_UNAVAILABLE"), "message": str(error)},
+            ) from error
+
+    @app.get("/api/connectors/wechatsync/{profile_id}/token")
+    def get_wechat_sync_token(
+        profile_id: str,
+        x_local_agent_action: str | None = Header(default=None),
+    ):
+        if x_local_agent_action != "confirmed":
+            raise HTTPException(403, "缺少本机操作确认")
+        try:
+            return {"profileId": profile_id, "token": agent.wechat_sync_token(profile_id)}
+        except KeyError as error:
+            raise HTTPException(404, str(error)) from error
+
     @app.post("/api/wechat/identify")
     def identify_wechat(x_local_agent_action: str | None = Header(default=None)):
         if x_local_agent_action != "confirmed":
@@ -137,7 +220,72 @@ def create_admin_app(agent: "PublisherAgentApp") -> FastAPI:
 
     @app.get("/api/tasks")
     def tasks(limit: int = 50):
-        return agent.ledger.recent_tasks(limit)
+        v1 = [
+            {**item, "protocol_version": "1.0"}
+            for item in agent.ledger.recent_tasks(limit)
+        ]
+        v2 = [
+            {
+                **item,
+                "protocol_version": "2.0",
+                "final_click_intent_at": item.get("action_intent_at"),
+            }
+            for item in agent.v2_ledger.recent_tasks(limit)
+        ]
+        local = [item.as_admin_dict() for item in agent.local_schedule_store.list(limit)]
+        return sorted(
+            [*v1, *v2, *local],
+            key=lambda item: item.get("updated_at") or "",
+            reverse=True,
+        )[:limit]
+
+    @app.post("/api/local-schedules", status_code=201)
+    def create_local_schedule(
+        body: LocalScheduleCreateRequest,
+        x_local_agent_action: str | None = Header(default=None),
+    ):
+        if x_local_agent_action != "confirmed":
+            raise HTTPException(403, "缺少本机操作确认")
+        try:
+            task = agent.create_local_schedule(body)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
+        return task.as_admin_dict()
+
+    @app.put("/api/local-schedules/{task_id}")
+    def update_local_schedule(
+        task_id: str,
+        body: LocalScheduleUpdateRequest,
+        x_local_agent_action: str | None = Header(default=None),
+    ):
+        if x_local_agent_action != "confirmed":
+            raise HTTPException(403, "缺少本机操作确认")
+        try:
+            task = agent.update_local_schedule(task_id, body)
+        except KeyError as error:
+            raise HTTPException(404, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
+        return task.as_admin_dict()
+
+    @app.post("/api/local-schedules/{task_id}/cancel")
+    def cancel_local_schedule(
+        task_id: str,
+        x_local_agent_action: str | None = Header(default=None),
+    ):
+        if x_local_agent_action != "confirmed":
+            raise HTTPException(403, "缺少本机操作确认")
+        try:
+            task = agent.cancel_local_schedule(task_id)
+        except KeyError as error:
+            raise HTTPException(404, str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
+        return task.as_admin_dict()
 
     @app.get("/api/logs")
     def logs(
@@ -173,7 +321,7 @@ ADMIN_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>朋友圈发布站</title>
+  <title>微信小助手</title>
   <style>
     :root{--paper:#f4f0e6;--ink:#18231f;--muted:#69736d;--line:#c8c1b3;--signal:#d84b2f;--ok:#277451;--panel:#fffdf7;--shadow:0 18px 45px #26352a1c}
     *{box-sizing:border-box}body{margin:0;color:var(--ink);font-family:"Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;background:radial-gradient(circle at 8% 10%,#e4d7b8 0 9%,transparent 25%),linear-gradient(115deg,#f7f2e6,#ece9dc 62%,#dfe9df);min-height:100vh}
@@ -186,7 +334,7 @@ ADMIN_HTML = r"""<!doctype html>
   </style>
 </head>
 <body><main>
-  <section class="mast"><div><div class="kicker">Windows Agent / Local Only</div><h1>朋友圈发布站</h1></div><div class="stamp">只监听 127.0.0.1<br>凭据由 Windows DPAPI 保存</div></section>
+  <section class="mast"><div><div class="kicker">Windows Agent / Local Only</div><h1>微信小助手</h1></div><div class="stamp">只监听 127.0.0.1<br>凭据由 Windows DPAPI 保存</div></section>
   <section class="grid">
     <article class="card"><h2>本机状态</h2><div class="facts" id="facts"></div><div class="toolbar" style="margin-top:16px"><button onclick="preflight()">环境预检</button><button class="alt" onclick="identifyWechat()">重新识别微信</button><button class="alt" onclick="refreshAll()">刷新</button><button class="danger" onclick="shutdownAgent(event)">安全退出 Agent</button></div><div class="notice" id="notice"></div></article>
     <article class="card"><div style="display:flex;justify-content:space-between;gap:12px"><div><h2>内容数据源</h2><div class="meta" style="margin:-10px 0 14px">携带部署配置安装时会自动导入默认内容中心和 API Key；每个来源的 URL 均可独立编辑。</div></div><button onclick="openSource()">+ 添加来源</button></div><div class="sources" id="sources"></div></article>

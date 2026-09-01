@@ -23,6 +23,7 @@ class BootstrapSource(BaseModel):
 
     id: str
     name: str
+    type: Literal["standard-http-v1", "standard-http-v2"] | None = None
     base_url: str = Field(alias="baseUrl")
     enabled: bool = True
     weight: int = 1
@@ -36,6 +37,11 @@ class BootstrapSource(BaseModel):
             {
                 "id": self.id,
                 "name": self.name,
+                "type": self.type or (
+                    "standard-http-v2"
+                    if self.base_url.rstrip("/").endswith("/v2")
+                    else "standard-http-v1"
+                ),
                 "baseUrl": self.base_url,
                 "enabled": self.enabled,
                 "weight": self.weight,

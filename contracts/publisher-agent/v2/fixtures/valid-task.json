@@ -1,0 +1,34 @@
+{
+  "specVersion": "content-publisher/task-v2",
+  "taskId": "task-01",
+  "idempotencyKey": "publish-task-01",
+  "revision": 1,
+  "createdAt": "2026-08-31T03:30:00Z",
+  "priority": 50,
+  "route": {
+    "providerKey": "wechatsync",
+    "operation": "create_draft",
+    "platform": "zhihu",
+    "accountStableId": "zhihu-user-42",
+    "nickname": "示例知乎账号",
+    "profileId": "chrome-profile-a",
+    "executorInstanceId": "wechatsync:chrome-profile-a"
+  },
+  "content": {
+    "title": "示例长图文",
+    "markdown": "# 标题\n\n正文",
+    "media": []
+  },
+  "options": {},
+  "schedule": {
+    "notBefore": "2026-08-31T03:30:00Z",
+    "expiresAt": null,
+    "timezone": "Asia/Shanghai",
+    "misfirePolicy": "manual"
+  },
+  "policy": {
+    "maxPreActionAttempts": 2,
+    "completionStrategy": "sync"
+  },
+  "extensions": {}
+}

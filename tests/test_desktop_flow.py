@@ -151,6 +151,10 @@ def test_moments_window_can_belong_to_a_separate_weixin_process(
         lambda hwnd: True,
     )
     monkeypatch.setattr(
+        "src.executor.operator.win32gui.IsWindow",
+        lambda hwnd: True,
+    )
+    monkeypatch.setattr(
         "src.executor.operator._get_window_text",
         lambda hwnd: "朋友圈",
     )
@@ -165,6 +169,76 @@ def test_moments_window_can_belong_to_a_separate_weixin_process(
 
     assert operator.find_moments_window()
     assert operator._moments_hwnd == 222
+
+
+def test_confirmed_publish_closes_only_the_separate_moments_window(
+    monkeypatch,
+) -> None:
+    operator = Operator.__new__(Operator)
+    operator._wechat_hwnd = 111
+    operator._moments_hwnd = 222
+    operator._active_hwnd = 222
+    window_exists = Mock(side_effect=[True, True, False, False])
+    post_message = Mock()
+    monkeypatch.setattr(
+        "src.executor.operator.win32gui.IsWindow",
+        window_exists,
+    )
+    monkeypatch.setattr(
+        "src.executor.operator._get_window_text",
+        lambda hwnd: "朋友圈" if hwnd == 222 else "微信",
+    )
+    monkeypatch.setattr(
+        "src.executor.operator.win32process.GetWindowThreadProcessId",
+        lambda hwnd: (1, 9002 if hwnd == 222 else 9001),
+    )
+    monkeypatch.setattr(
+        "src.executor.wechat_discovery._get_process_name",
+        lambda pid: "Weixin.exe",
+    )
+    monkeypatch.setattr(
+        "src.executor.operator.win32gui.PostMessage",
+        post_message,
+    )
+    monkeypatch.setattr("src.executor.operator.time.sleep", Mock())
+
+    assert operator.close_moments_window()
+    post_message.assert_called_once_with(222, 16, 0, 0)
+    assert operator._moments_hwnd is None
+    assert operator._active_hwnd == 111
+
+
+def test_moments_cleanup_refuses_to_close_the_main_wechat_window(
+    monkeypatch,
+) -> None:
+    operator = Operator.__new__(Operator)
+    operator._wechat_hwnd = 111
+    operator._moments_hwnd = 111
+    operator._active_hwnd = 111
+    monkeypatch.setattr(
+        "src.executor.operator.win32gui.IsWindow",
+        lambda hwnd: True,
+    )
+    monkeypatch.setattr(
+        "src.executor.operator._get_window_text",
+        lambda hwnd: "朋友圈",
+    )
+    monkeypatch.setattr(
+        "src.executor.operator.win32process.GetWindowThreadProcessId",
+        lambda hwnd: (1, 9001),
+    )
+    monkeypatch.setattr(
+        "src.executor.wechat_discovery._get_process_name",
+        lambda pid: "Weixin.exe",
+    )
+    post_message = Mock()
+    monkeypatch.setattr(
+        "src.executor.operator.win32gui.PostMessage",
+        post_message,
+    )
+
+    assert not operator.close_moments_window()
+    post_message.assert_not_called()
 
 
 def test_login_fallback_scans_only_the_main_window() -> None:

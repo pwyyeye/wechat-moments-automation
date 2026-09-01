@@ -12,17 +12,16 @@ from typing import Iterable, Protocol
 
 logger = logging.getLogger(__name__)
 
-_CACHE_SECONDS = 30 * 60
-_RETRY_SECONDS = 60
 _WECHAT_PROCESS_NAMES = {"weixin.exe", "wechat.exe"}
 _cache_lock = threading.Lock()
 _cached_identity: "WeChatIdentity | None" = None
 _cached_hwnd: int | None = None
 _cached_at = 0.0
+_identity_ocr_engine = None
 _identity_state: dict[str, str | None] = {
     "state": "idle",
     "code": None,
-    "message": "尚未开始识别",
+    "message": "尚未识别，请点击“重新识别”",
     "lastAttemptAt": None,
 }
 
@@ -121,8 +120,42 @@ def get_wechat_identity_status() -> dict[str, str | None]:
 
 def get_cached_wechat_identity() -> WeChatIdentity | None:
     """Return the last identity without activating WeChat or running OCR."""
+    global _cached_at, _cached_hwnd, _cached_identity
+
+    try:
+        current_hwnd = find_wechat_main_window()
+    except Exception:
+        current_hwnd = None
     with _cache_lock:
+        if _cached_identity is not None and current_hwnd != _cached_hwnd:
+            _cached_identity = None
+            _cached_hwnd = current_hwnd
+            _cached_at = 0.0
+            _identity_state.update(
+                {
+                    "state": "waiting",
+                    "code": "WECHAT_SESSION_CHANGED",
+                    "message": "微信窗口已变化，请点击“重新识别”确认当前账号",
+                }
+            )
         return _cached_identity
+
+
+def _get_identity_ocr_engine():
+    """Reuse one OCR runtime for explicit identity checks in this process."""
+    global _identity_ocr_engine
+    if _identity_ocr_engine is None:
+        from src.locator.ocr_locator import PaddleOCREngine
+
+        _identity_ocr_engine = PaddleOCREngine()
+    return _identity_ocr_engine
+
+
+def _looks_like_profile(blocks: Iterable[OcrBlock]) -> bool:
+    return any(
+        re.search(r"微信号|WeChat\s*ID", block.text, re.IGNORECASE)
+        for block in blocks
+    )
 
 
 def _window_process_name(hwnd: int) -> str:
@@ -254,8 +287,6 @@ def _detect_profile_identity(hwnd: int) -> WeChatIdentity | None:
     import win32gui
     from PIL import ImageGrab
 
-    from src.locator.ocr_locator import PaddleOCREngine
-
     try:
         ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     except Exception:
@@ -264,6 +295,7 @@ def _detect_profile_identity(hwnd: int) -> WeChatIdentity | None:
     was_visible = bool(win32gui.IsWindowVisible(hwnd))
     previous_foreground = win32gui.GetForegroundWindow()
     previous_cursor = win32api.GetCursorPos()
+    profile_opened = False
     try:
         if not was_visible:
             win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
@@ -276,47 +308,54 @@ def _detect_profile_identity(hwnd: int) -> WeChatIdentity | None:
         if right - left < 500 or bottom - top < 400:
             return None
 
-        engine = PaddleOCREngine()
+        engine = _get_identity_ocr_engine()
         client_left, client_top = win32gui.ClientToScreen(hwnd, (0, 0))
-        avatar_points = [
-            (left + 55, top + 94),
-            (client_left + 55, client_top + 94),
-            (left + 50, top + 82),
-            (client_left + 50, client_top + 82),
-            (left + 55, top + 110),
-            (left + 45, top + 66),
-        ]
-        for avatar_screen_x, avatar_screen_y in dict.fromkeys(avatar_points):
-            win32api.SetCursorPos((avatar_screen_x, avatar_screen_y))
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            time.sleep(0.5)
+        get_dpi = getattr(ctypes.windll.user32, "GetDpiForWindow", None)
+        dpi = get_dpi(hwnd) if get_dpi else 96
+        scale = min(max((dpi or 96) / 96, 0.75), 3.0)
+        avatar_screen_x = client_left + round(38 * scale)
+        avatar_screen_y = client_top + round(60 * scale)
+        logger.info(
+            "manual WeChat identity detection started hwnd=%s point=(%s,%s) dpi=%s",
+            hwnd,
+            avatar_screen_x,
+            avatar_screen_y,
+            dpi,
+        )
+        win32api.SetCursorPos((avatar_screen_x, avatar_screen_y))
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        time.sleep(0.5)
 
-            profile = ImageGrab.grab(
-                bbox=(
-                    left + 70,
-                    top + 20,
-                    min(right, left + 650),
-                    min(bottom, top + 320),
-                ),
-                all_screens=True,
-            )
-            identity = parse_profile_identity(engine.recognize(np.array(profile)))
-            if identity is not None:
-                return identity
-            win32api.keybd_event(win32con.VK_ESCAPE, 0, 0, 0)
-            win32api.keybd_event(win32con.VK_ESCAPE, 0, win32con.KEYEVENTF_KEYUP, 0)
-            time.sleep(0.15)
-        return None
+        profile = ImageGrab.grab(
+            bbox=(
+                client_left + round(46 * scale),
+                client_top,
+                min(right, client_left + round(440 * scale)),
+                min(bottom, client_top + round(270 * scale)),
+            ),
+            all_screens=True,
+        )
+        blocks = engine.recognize(np.array(profile))
+        identity = parse_profile_identity(blocks)
+        profile_opened = identity is not None or _looks_like_profile(blocks)
+        logger.info(
+            "manual WeChat identity detection finished hwnd=%s recognized=%s profileOpened=%s",
+            hwnd,
+            identity is not None,
+            profile_opened,
+        )
+        return identity
     finally:
         try:
-            win32api.keybd_event(win32con.VK_ESCAPE, 0, 0, 0)
-            win32api.keybd_event(
-                win32con.VK_ESCAPE,
-                0,
-                win32con.KEYEVENTF_KEYUP,
-                0,
-            )
+            if profile_opened:
+                win32api.keybd_event(win32con.VK_ESCAPE, 0, 0, 0)
+                win32api.keybd_event(
+                    win32con.VK_ESCAPE,
+                    0,
+                    win32con.KEYEVENTF_KEYUP,
+                    0,
+                )
             win32api.SetCursorPos(previous_cursor)
             if not was_visible:
                 win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
@@ -327,11 +366,18 @@ def _detect_profile_identity(hwnd: int) -> WeChatIdentity | None:
 
 
 def get_wechat_identity(*, force: bool = False) -> WeChatIdentity | None:
-    """Detect once per WeChat session and then serve heartbeats from cache."""
+    """Return the cache unless a caller explicitly requests one UI interaction."""
     global _cached_at, _cached_hwnd, _cached_identity
+
+    if not force:
+        return get_cached_wechat_identity()
 
     hwnd = find_wechat_main_window()
     if hwnd is None:
+        with _cache_lock:
+            _cached_identity = None
+            _cached_hwnd = None
+            _cached_at = 0.0
         _set_identity_state(
             "waiting",
             "WECHAT_MAIN_WINDOW_NOT_FOUND",
@@ -339,16 +385,9 @@ def get_wechat_identity(*, force: bool = False) -> WeChatIdentity | None:
         )
         return None
     now = time.monotonic()
-    cache_seconds = _CACHE_SECONDS if _cached_identity is not None else _RETRY_SECONDS
-    if (
-        not force
-        and _cached_hwnd == hwnd
-        and now - _cached_at < cache_seconds
-    ):
-        return _cached_identity
 
     if not _cache_lock.acquire(blocking=False):
-        return _cached_identity
+        return None
     try:
         _identity_state.update(
             {
@@ -359,13 +398,6 @@ def get_wechat_identity(*, force: bool = False) -> WeChatIdentity | None:
             }
         )
         now = time.monotonic()
-        if (
-            not force
-            and _cached_hwnd == hwnd
-            and _cached_identity is not None
-            and now - _cached_at < _CACHE_SECONDS
-        ):
-            return _cached_identity
         try:
             detected = _detect_profile_identity(hwnd)
         except Exception as error:
@@ -389,14 +421,16 @@ def get_wechat_identity(*, force: bool = False) -> WeChatIdentity | None:
                     "message": "微信账号识别成功",
                 }
             )
-        elif _identity_state["state"] != "failed":
-            _identity_state.update(
-                {
-                    "state": "waiting",
-                    "code": "WECHAT_PROFILE_NOT_RECOGNIZED",
-                    "message": "未识别到资料卡文字，请保持微信已登录并点击“重新识别”",
-                }
-            )
-        return _cached_identity
+        else:
+            _cached_identity = None
+            if _identity_state["state"] != "failed":
+                _identity_state.update(
+                    {
+                        "state": "waiting",
+                        "code": "WECHAT_PROFILE_NOT_RECOGNIZED",
+                        "message": "未识别到资料卡文字，请保持微信已登录并点击“重新识别”",
+                    }
+                )
+        return detected
     finally:
         _cache_lock.release()

@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import threading
 import time
-from queue import SimpleQueue
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from queue import SimpleQueue
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -41,6 +42,20 @@ class LocalAgentClient:
     def tasks(self) -> list[dict]:
         return self._request("GET", "/api/tasks")
 
+    def create_local_schedule(self, payload: dict) -> dict:
+        return self._request("POST", "/api/local-schedules", json=payload, timeout=30.0)
+
+    def update_local_schedule(self, task_id: str, payload: dict) -> dict:
+        return self._request(
+            "PUT",
+            f"/api/local-schedules/{task_id}",
+            json=payload,
+            timeout=30.0,
+        )
+
+    def cancel_local_schedule(self, task_id: str) -> dict:
+        return self._request("POST", f"/api/local-schedules/{task_id}/cancel")
+
     def logs(
         self,
         *,
@@ -74,6 +89,32 @@ class LocalAgentClient:
 
     def delete_source(self, source_id: str) -> dict:
         return self._request("DELETE", f"/api/sources/{source_id}")
+
+    def test_wechat_sync(self, profile_id: str) -> dict:
+        return self._request(
+            "POST",
+            f"/api/connectors/wechatsync/{profile_id}/test",
+            timeout=40.0,
+        )
+
+    def launch_wechat_sync(self, profile_id: str) -> dict:
+        return self._request("POST", f"/api/connectors/wechatsync/{profile_id}/launch")
+
+    def wechat_sync_token(self, profile_id: str) -> dict:
+        return self._request("GET", f"/api/connectors/wechatsync/{profile_id}/token")
+
+    def add_wechat_sync(self, payload: dict) -> dict:
+        return self._request("POST", "/api/connectors/wechatsync", json=payload)
+
+    def update_wechat_sync(self, profile_id: str, payload: dict) -> dict:
+        return self._request(
+            "PUT",
+            f"/api/connectors/wechatsync/{profile_id}",
+            json=payload,
+        )
+
+    def delete_wechat_sync(self, profile_id: str) -> dict:
+        return self._request("DELETE", f"/api/connectors/wechatsync/{profile_id}")
 
     def _request(
         self,
@@ -136,7 +177,7 @@ class NativeAdminWindow:
         self.client = client
         self.colors = Palette()
         self.root = tk.Tk()
-        self.root.title("朋友圈发布站 - Windows Agent")
+        self.root.title("微信小助手")
         self.root.geometry("1180x780")
         self.root.minsize(980, 650)
         self.root.configure(bg=self.colors.paper)
@@ -152,6 +193,8 @@ class NativeAdminWindow:
         self._refreshing = False
         self._status: dict = {}
         self._sources: list[dict] = []
+        self._profiles: list[dict] = []
+        self._tasks: list[dict] = []
         self._log_dialog = None
         self._facts: dict[str, Any] = {}
         self._callbacks: SimpleQueue[Callable] = SimpleQueue()
@@ -211,7 +254,7 @@ class NativeAdminWindow:
         ).pack(anchor="w")
         tk.Label(
             title_group,
-            text="朋友圈发布站",
+            text="微信小助手",
             bg=self.colors.paper,
             fg=self.colors.ink,
             font=("KaiTi", 34, "bold"),
@@ -360,7 +403,7 @@ class NativeAdminWindow:
             parent,
             columns=source_columns,
             show="headings",
-            height=7,
+            height=5,
             style="Agent.Treeview",
         )
         for column, title, width in (
@@ -373,8 +416,45 @@ class NativeAdminWindow:
             self.source_tree.column(column, width=width, minwidth=70)
         self.source_tree.pack(fill="x")
 
+        connector_head = tk.Frame(parent, bg=self.colors.panel)
+        connector_head.pack(fill="x", pady=(14, 0))
+        tk.Label(
+            connector_head,
+            text="浏览器发布账号",
+            bg=self.colors.panel,
+            fg=self.colors.ink,
+            font=("KaiTi", 20, "bold"),
+        ).pack(side="left")
+        self._button(connector_head, "+ Chrome Profile", self.open_wechat_sync).pack(side="right")
+
+        connector_tools = tk.Frame(parent, bg=self.colors.panel)
+        connector_tools.pack(fill="x", pady=(7, 7))
+        self._button(connector_tools, "检测登录", self.test_wechat_sync, alt=True).pack(side="left", padx=(0, 5))
+        self._button(connector_tools, "启动 Chrome", self.launch_wechat_sync, alt=True).pack(side="left", padx=5)
+        self._button(connector_tools, "复制连接配置", self.copy_wechat_sync_setup, alt=True).pack(side="left", padx=5)
+        self._button(connector_tools, "编辑", self.edit_wechat_sync, alt=True).pack(side="left", padx=5)
+        self._button(connector_tools, "删除", self.delete_wechat_sync, danger=True).pack(side="left", padx=5)
+
+        connector_columns = ("name", "state", "accounts", "bridge")
+        self.connector_tree = self.ttk.Treeview(
+            parent,
+            columns=connector_columns,
+            show="headings",
+            height=4,
+            style="Agent.Treeview",
+        )
+        for column, title, width in (
+            ("name", "Chrome Profile", 170),
+            ("state", "连接", 90),
+            ("accounts", "已登录账号", 280),
+            ("bridge", "本机 Bridge", 210),
+        ):
+            self.connector_tree.heading(column, text=title)
+            self.connector_tree.column(column, width=width, minwidth=70)
+        self.connector_tree.pack(fill="x")
+
         task_head = tk.Frame(parent, bg=self.colors.panel)
-        task_head.pack(fill="x", pady=(18, 8))
+        task_head.pack(fill="x", pady=(14, 8))
         tk.Label(
             task_head,
             text="最近任务",
@@ -383,21 +463,31 @@ class NativeAdminWindow:
             font=("KaiTi", 20, "bold"),
         ).pack(side="left")
         self._button(task_head, "刷新任务", self.refresh, alt=True).pack(side="right")
+        self._button(task_head, "取消定时", self.cancel_local_schedule, danger=True).pack(
+            side="right", padx=5
+        )
+        self._button(task_head, "编辑定时", self.edit_local_schedule, alt=True).pack(
+            side="right", padx=5
+        )
+        self._button(task_head, "+ 定时朋友圈", self.open_local_schedule).pack(
+            side="right", padx=5
+        )
 
-        task_columns = ("source", "task", "state", "attempt", "updated")
+        task_columns = ("source", "task", "account", "state", "attempt", "updated")
         self.task_tree = self.ttk.Treeview(
             parent,
             columns=task_columns,
             show="headings",
-            height=9,
+            height=6,
             style="Agent.Treeview",
         )
         for column, title, width in (
             ("source", "来源", 130),
-            ("task", "任务 ID", 230),
+            ("task", "任务 / 文案", 210),
+            ("account", "微信账号", 120),
             ("state", "状态", 100),
             ("attempt", "尝试", 60),
-            ("updated", "更新时间", 160),
+            ("updated", "执行 / 更新时间", 165),
         ):
             self.task_tree.heading(column, text=title)
             self.task_tree.column(column, width=width, minwidth=50)
@@ -437,8 +527,10 @@ class NativeAdminWindow:
             self._refreshing = False
             self._status, tasks = result
             self._sources = self._status.get("sources", [])
+            self._profiles = self._status.get("connectors", [])
             self._render_status()
             self._render_sources()
+            self._render_connectors()
             self._render_tasks(tasks)
             self.notice("Agent 已连接，桌面控制台会自动刷新", "ok")
             if not self._closing:
@@ -493,20 +585,290 @@ class NativeAdminWindow:
             self.source_tree.selection_set(selected)
 
     def _render_tasks(self, tasks: list[dict]) -> None:
+        selected_task = self._selected_task()
+        selected_id = selected_task.get("task_id") if selected_task else None
+        self._tasks = tasks
         self.task_tree.delete(*self.task_tree.get_children())
         for index, task in enumerate(tasks):
+            is_local = task.get("kind") == "local_schedule"
+            label = task.get("text_preview") if is_local else task.get("task_id", "-")
+            account = (
+                task.get("target_nickname")
+                or task.get("target_wechat_id")
+                or task.get("target_account_key")
+                or "-"
+            )
             self.task_tree.insert(
                 "",
                 "end",
                 iid=f"task-{index}",
                 values=(
                     task.get("source_id", "-"),
-                    task.get("task_id", "-"),
-                    task.get("state", "-"),
+                    label or task.get("task_id", "-"),
+                    account,
+                    self._task_state_label(task.get("state", "-")) if is_local else task.get("state", "-"),
                     task.get("attempt", "-"),
-                    task.get("updated_at", "-"),
+                    self._format_local_time(task.get("scheduled_at"))
+                    if is_local
+                    else task.get("updated_at", "-"),
                 ),
             )
+            if selected_id and task.get("task_id") == selected_id:
+                self.task_tree.selection_set(f"task-{index}")
+
+    @staticmethod
+    def _format_local_time(value: str | None) -> str:
+        if not value:
+            return "-"
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().strftime(
+                "%Y-%m-%d %H:%M"
+            )
+        except ValueError:
+            return value
+
+    @staticmethod
+    def _task_state_label(value: str) -> str:
+        return {
+            "pending": "待执行",
+            "executing": "执行中",
+            "final_click_intent": "点击中",
+            "confirming": "确认中",
+            "succeeded": "已成功",
+            "failed": "失败",
+            "uncertain": "待人工确认",
+            "cancelled": "已取消",
+        }.get(value, value)
+
+    def open_local_schedule(self) -> None:
+        self._local_schedule_dialog(None)
+
+    def edit_local_schedule(self) -> None:
+        task = self._selected_task()
+        if task is None or task.get("kind") != "local_schedule":
+            self.notice("请先选择一个本机定时任务", "error")
+            return
+        if task.get("state") not in {"pending", "failed"}:
+            self.notice("只有待执行或点击前失败的本机任务可以编辑", "error")
+            return
+        self._local_schedule_dialog(task)
+
+    def cancel_local_schedule(self) -> None:
+        from tkinter import messagebox
+
+        task = self._selected_task()
+        if task is None or task.get("kind") != "local_schedule":
+            self.notice("请先选择一个本机定时任务", "error")
+            return
+        if not messagebox.askyesno(
+            "取消定时任务",
+            "确定取消这个本机朋友圈定时任务？\n已复制到 Agent 的图片会保留作为审计记录。",
+            parent=self.root,
+        ):
+            return
+
+        def done(_result):
+            self.notice("本机定时任务已取消", "ok")
+            self.refresh()
+
+        self._async(lambda: self.client.cancel_local_schedule(task["task_id"]), done)
+
+    def _local_schedule_dialog(self, task: dict | None) -> None:
+        tk = self.tk
+        from tkinter import filedialog, messagebox
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("编辑定时朋友圈" if task else "新建定时朋友圈")
+        dialog.geometry("760x690")
+        dialog.minsize(680, 620)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=self.colors.paper, padx=24, pady=20)
+
+        tk.Label(
+            dialog,
+            text="本机定时朋友圈",
+            bg=self.colors.paper,
+            fg=self.colors.ink,
+            font=("KaiTi", 24, "bold"),
+        ).pack(anchor="w")
+        target = task or {}
+        account = (
+            target.get("target_nickname")
+            or target.get("target_wechat_id")
+            or self._status.get("wechat", {}).get("wechatNickname")
+            or self._status.get("wechat", {}).get("wechatId")
+            or "尚未识别"
+        )
+        tk.Label(
+            dialog,
+            text=f"指定微信账号：{account}。执行时账号不一致将停止发布。",
+            bg=self.colors.paper,
+            fg=self.colors.muted,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(anchor="w", pady=(3, 16))
+
+        tk.Label(
+            dialog,
+            text="朋友圈文案（最多 5000 字）",
+            bg=self.colors.paper,
+            fg=self.colors.ink,
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(anchor="w")
+        text_box = tk.Text(
+            dialog,
+            height=12,
+            wrap="word",
+            bg=self.colors.panel,
+            fg=self.colors.ink,
+            relief="solid",
+            bd=1,
+            padx=10,
+            pady=8,
+            font=("Microsoft YaHei UI", 10),
+        )
+        text_box.pack(fill="both", expand=True, pady=(6, 14))
+        text_box.insert("1.0", target.get("text", ""))
+
+        schedule_row = tk.Frame(dialog, bg=self.colors.paper)
+        schedule_row.pack(fill="x", pady=(0, 14))
+        tk.Label(
+            schedule_row,
+            text="执行时间",
+            bg=self.colors.paper,
+            fg=self.colors.ink,
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side="left")
+        default_time = datetime.now().astimezone() + timedelta(minutes=10)
+        if target.get("scheduled_at"):
+            default_time = datetime.fromisoformat(
+                target["scheduled_at"].replace("Z", "+00:00")
+            ).astimezone()
+        time_var = tk.StringVar(value=default_time.strftime("%Y-%m-%d %H:%M"))
+        tk.Entry(
+            schedule_row,
+            textvariable=time_var,
+            width=24,
+            bg=self.colors.panel,
+            fg=self.colors.ink,
+            relief="solid",
+            bd=1,
+            font=("Consolas", 10),
+        ).pack(side="left", padx=12, ipady=6)
+        tk.Label(
+            schedule_row,
+            text="本机时区，格式 YYYY-MM-DD HH:MM",
+            bg=self.colors.paper,
+            fg=self.colors.muted,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side="left")
+
+        image_paths: list[str] = []
+        image_row = tk.Frame(dialog, bg=self.colors.paper)
+        image_row.pack(fill="x")
+        image_label = tk.Label(
+            image_row,
+            text="",
+            bg=self.colors.paper,
+            fg=self.colors.muted,
+            justify="left",
+            anchor="w",
+            wraplength=520,
+            font=("Microsoft YaHei UI", 9),
+        )
+        image_label.pack(side="left", fill="x", expand=True)
+
+        def render_images() -> None:
+            paths = image_paths or target.get("media_paths", [])
+            prefix = "新选择" if image_paths else ("原任务" if task else "尚未选择")
+            names = "、".join(os.path.basename(path) for path in paths)
+            image_label.configure(text=f"{prefix}图片 {len(paths)} 张：{names}" if paths else prefix)
+
+        def choose_images() -> None:
+            chosen = filedialog.askopenfilenames(
+                parent=dialog,
+                title="选择 1 到 9 张朋友圈图片",
+                filetypes=(
+                    ("JPG / PNG 图片", "*.jpg *.jpeg *.png"),
+                    ("所有文件", "*.*"),
+                ),
+            )
+            if not chosen:
+                return
+            if len(chosen) > 9:
+                messagebox.showerror("图片过多", "每条朋友圈最多选择 9 张图片。", parent=dialog)
+                return
+            image_paths[:] = list(chosen)
+            render_images()
+
+        self._button(image_row, "选择图片", choose_images, alt=True).pack(side="right", padx=(12, 0))
+        render_images()
+
+        actions = tk.Frame(dialog, bg=self.colors.paper)
+        actions.pack(fill="x", pady=(18, 0))
+        self._button(actions, "取消", dialog.destroy, alt=True).pack(side="right", padx=(6, 0))
+
+        def save() -> None:
+            try:
+                local_time = datetime.strptime(time_var.get().strip(), "%Y-%m-%d %H:%M").astimezone()
+                content = text_box.get("1.0", "end-1c")
+                if len(content) > 5000:
+                    raise ValueError("朋友圈文案不能超过 5000 字")
+                if task is None and not image_paths:
+                    raise ValueError("请选择 1 到 9 张图片")
+                payload = {
+                    "text": content,
+                    "scheduledAt": local_time.isoformat(),
+                }
+                if task is None or image_paths:
+                    payload["imagePaths"] = image_paths
+            except ValueError as error:
+                messagebox.showerror("内容不完整", str(error), parent=dialog)
+                return
+
+            save_button.configure(state="disabled")
+
+            def saved(result):
+                dialog.destroy()
+                nickname = result.get("target_nickname") or result.get("target_wechat_id") or "当前微信"
+                self.notice(f"已为 {nickname} 保存本机定时朋友圈", "ok")
+                self.refresh()
+
+            def failed(error):
+                save_button.configure(state="normal")
+                messagebox.showerror("保存失败", str(error), parent=dialog)
+
+            operation = (
+                (lambda: self.client.update_local_schedule(task["task_id"], payload))
+                if task
+                else (lambda: self.client.create_local_schedule(payload))
+            )
+            self._async(operation, saved, failed)
+
+        save_button = self._button(actions, "保存定时任务", save)
+        save_button.pack(side="right", padx=6)
+
+    def _render_connectors(self) -> None:
+        selected = self._selected_profile_id()
+        self.connector_tree.delete(*self.connector_tree.get_children())
+        for profile in self._profiles:
+            account_text = " / ".join(
+                f"{item.get('platform')}:{item.get('nickname')}"
+                for item in profile.get("accounts", [])
+            ) or "未识别到登录账号"
+            self.connector_tree.insert(
+                "",
+                "end",
+                iid=profile["id"],
+                values=(
+                    profile.get("name", profile["id"]),
+                    "已连接" if profile.get("connected") else "等待扩展",
+                    account_text,
+                    profile.get("bridgeUrl", "-"),
+                ),
+            )
+        if selected and self.connector_tree.exists(selected):
+            self.connector_tree.selection_set(selected)
 
     def preflight(self) -> None:
         self.notice("正在执行环境预检，最多等待 25 秒...", "info")
@@ -768,15 +1130,229 @@ class NativeAdminWindow:
 
         self._async(lambda: self.client.delete_source(source["id"]), done)
 
-    def _source_dialog(self, source: dict | None) -> None:
+    def open_wechat_sync(self) -> None:
+        self._wechat_sync_dialog(None)
+
+    def edit_wechat_sync(self) -> None:
+        profile = self._selected_profile()
+        if profile is None:
+            self.notice("请先选择一个 Chrome Profile", "error")
+            return
+        self._wechat_sync_dialog(profile)
+
+    def test_wechat_sync(self) -> None:
+        profile = self._selected_profile()
+        if profile is None:
+            self.notice("请先选择一个 Chrome Profile", "error")
+            return
+        self.notice(f"正在检测 {profile['name']} 的扩展与登录账号...", "info")
+
+        def done(result):
+            accounts = result.get("accounts", [])
+            if result.get("connected"):
+                names = "、".join(item.get("nickname", "-") for item in accounts) or "没有已登录账号"
+                self.notice(f"扩展已连接：{names}", "ok" if accounts else "error")
+            else:
+                self.notice("扩展未连接，请在该 Chrome Profile 中开启 MCP 连接", "error")
+            self.refresh()
+
+        self._async(lambda: self.client.test_wechat_sync(profile["id"]), done)
+
+    def launch_wechat_sync(self) -> None:
+        profile = self._selected_profile()
+        if profile is None:
+            self.notice("请先选择一个 Chrome Profile", "error")
+            return
+        self._async(
+            lambda: self.client.launch_wechat_sync(profile["id"]),
+            lambda _result: self.notice("Chrome 已启动，请登录平台并开启扩展 MCP 连接", "ok"),
+        )
+
+    def copy_wechat_sync_setup(self) -> None:
+        profile = self._selected_profile()
+        if profile is None:
+            self.notice("请先选择一个 Chrome Profile", "error")
+            return
+
+        def done(result):
+            text = f"服务器地址: {profile['bridgeUrl']}\nToken: {result['token']}"
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.notice("扩展服务器地址与 Token 已复制，请粘贴到 WechatSync MCP 设置", "ok")
+
+        self._async(lambda: self.client.wechat_sync_token(profile["id"]), done)
+
+    def delete_wechat_sync(self) -> None:
+        from tkinter import messagebox
+
+        profile = self._selected_profile()
+        if profile is None:
+            self.notice("请先选择一个 Chrome Profile", "error")
+            return
+        if not messagebox.askyesno(
+            "删除 Chrome Profile 配置",
+            f"删除 {profile['name']}？\n不会删除 Chrome 用户数据。",
+            parent=self.root,
+        ):
+            return
+
+        def done(_result):
+            self.notice("Chrome Profile 配置已删除", "ok")
+            self.refresh()
+
+        self._async(lambda: self.client.delete_wechat_sync(profile["id"]), done)
+
+    def _wechat_sync_dialog(self, profile: dict | None) -> None:
         tk = self.tk
         from tkinter import messagebox
-        from tkinter import ttk
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("编辑 Chrome Profile" if profile else "添加 Chrome Profile")
+        dialog.geometry("720x650")
+        dialog.minsize(650, 600)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=self.colors.paper, padx=24, pady=20)
+
+        values = {
+            "id": tk.StringVar(value=(profile or {}).get("id", "")),
+            "name": tk.StringVar(value=(profile or {}).get("name", "")),
+            "port": tk.StringVar(value=str((profile or {}).get("bridgeUrl", "ws://127.0.0.1:9527").rsplit(":", 1)[-1])),
+            "chrome": tk.StringVar(value=(profile or {}).get("chromeExecutable") or ""),
+            "data": tk.StringVar(value=(profile or {}).get("userDataDir") or ""),
+            "directory": tk.StringVar(value=(profile or {}).get("profileDirectory") or ""),
+            "extension": tk.StringVar(value=(profile or {}).get("extensionPath") or ""),
+            "enabled": tk.BooleanVar(value=(profile or {}).get("enabled", True)),
+            "auto": tk.BooleanVar(value=(profile or {}).get("autoLaunch", False)),
+            "zhihu": tk.BooleanVar(value="zhihu" in (profile or {}).get("platforms", ["zhihu", "juejin"])),
+            "juejin": tk.BooleanVar(value="juejin" in (profile or {}).get("platforms", ["zhihu", "juejin"])),
+        }
+
+        tk.Label(
+            dialog,
+            text="一个 Profile 对应一套独立浏览器登录态",
+            bg=self.colors.paper,
+            fg=self.colors.ink,
+            font=("KaiTi", 22, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
+
+        def field(row, title, variable, *, readonly=False):
+            tk.Label(
+                dialog,
+                text=title,
+                bg=self.colors.paper,
+                fg=self.colors.ink,
+                font=("Microsoft YaHei UI", 9, "bold"),
+            ).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=7)
+            entry = tk.Entry(
+                dialog,
+                textvariable=variable,
+                state="readonly" if readonly else "normal",
+                bg=self.colors.panel,
+                fg=self.colors.ink,
+                relief="solid",
+                bd=1,
+                font=("Microsoft YaHei UI", 10),
+            )
+            entry.grid(row=row, column=1, sticky="ew", pady=7, ipady=6)
+
+        field(1, "Profile ID", values["id"], readonly=profile is not None)
+        field(2, "显示名称", values["name"])
+        field(3, "Bridge 端口", values["port"])
+        field(4, "Chrome.exe（可留空）", values["chrome"])
+        field(5, "独立 user-data-dir", values["data"])
+        field(6, "profile-directory", values["directory"])
+        field(7, "WechatSync 扩展目录", values["extension"])
+
+        checks = tk.Frame(dialog, bg=self.colors.paper)
+        checks.grid(row=8, column=1, sticky="w", pady=9)
+        for title, variable in (
+            ("启用", values["enabled"]),
+            ("Agent 启动时打开 Chrome", values["auto"]),
+            ("知乎", values["zhihu"]),
+            ("掘金", values["juejin"]),
+        ):
+            tk.Checkbutton(
+                checks,
+                text=title,
+                variable=variable,
+                bg=self.colors.paper,
+                activebackground=self.colors.paper,
+                font=("Microsoft YaHei UI", 9),
+            ).pack(side="left", padx=(0, 14))
+
+        tk.Label(
+            dialog,
+            text="安全约束：Bridge 固定监听 127.0.0.1；每个 Profile 必须使用不同端口。保存后用“复制连接配置”取得扩展 Token。",
+            bg=self.colors.soft,
+            fg=self.colors.ink,
+            justify="left",
+            wraplength=620,
+            padx=12,
+            pady=10,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 14))
+
+        actions = tk.Frame(dialog, bg=self.colors.paper)
+        actions.grid(row=10, column=0, columnspan=2, sticky="e")
+        self._button(actions, "取消", dialog.destroy, alt=True).pack(side="left", padx=6)
+
+        def save():
+            platforms = [
+                platform
+                for platform, selected in (("zhihu", values["zhihu"]), ("juejin", values["juejin"]))
+                if selected.get()
+            ]
+            payload = {
+                "id": values["id"].get().strip(),
+                "name": values["name"].get().strip(),
+                "enabled": values["enabled"].get(),
+                "bridgePort": values["port"].get().strip(),
+                "platforms": platforms,
+                "chromeExecutable": values["chrome"].get().strip() or None,
+                "userDataDir": values["data"].get().strip() or None,
+                "profileDirectory": values["directory"].get().strip() or None,
+                "extensionPath": values["extension"].get().strip() or None,
+                "autoLaunch": values["auto"].get(),
+            }
+            try:
+                payload["bridgePort"] = int(payload["bridgePort"])
+                if not payload["id"] or not payload["name"] or not platforms:
+                    raise ValueError("Profile ID、名称和至少一个平台不能为空")
+            except ValueError as error:
+                messagebox.showerror("配置不完整", str(error), parent=dialog)
+                return
+
+            save_button.configure(state="disabled")
+
+            def saved(_result):
+                dialog.destroy()
+                self.notice("Chrome Profile 配置已保存", "ok")
+                self.refresh()
+
+            def failed(error):
+                save_button.configure(state="normal")
+                messagebox.showerror("保存失败", str(error), parent=dialog)
+
+            operation = (
+                (lambda: self.client.update_wechat_sync(profile["id"], payload))
+                if profile
+                else (lambda: self.client.add_wechat_sync(payload))
+            )
+            self._async(operation, saved, failed)
+
+        save_button = self._button(actions, "保存并应用", save)
+        save_button.pack(side="left", padx=6)
+        dialog.columnconfigure(1, weight=1)
+
+    def _source_dialog(self, source: dict | None) -> None:
+        tk = self.tk
+        from tkinter import messagebox, ttk
 
         dialog = tk.Toplevel(self.root)
         dialog.title("编辑数据源" if source else "添加数据源")
-        dialog.geometry("690x610")
-        dialog.minsize(620, 560)
+        dialog.geometry("690x660")
+        dialog.minsize(620, 610)
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.configure(bg=self.colors.paper, padx=24, pady=20)
@@ -787,6 +1363,7 @@ class NativeAdminWindow:
             "url": tk.StringVar(value=(source or {}).get("baseUrl", "")),
             "account": tk.StringVar(value=(source or {}).get("accountKey", "wechat-main")),
             "weight": tk.StringVar(value=str((source or {}).get("weight", 1))),
+            "type": tk.StringVar(value=(source or {}).get("type", "standard-http-v2")),
             "auth": tk.StringVar(value=(source or {}).get("authType", "api_key_header")),
             "header": tk.StringVar(value=(source or {}).get("headerName") or "x-api-key"),
             "credential": tk.StringVar(),
@@ -830,24 +1407,28 @@ class NativeAdminWindow:
         field(4, "账号别名", values["account"])
         field(5, "权重 1-10", values["weight"])
 
-        tk.Label(dialog, text="认证类型", bg=self.colors.paper, fg=self.colors.ink, font=("Microsoft YaHei UI", 9, "bold")).grid(row=6, column=0, sticky="w", padx=(0, 14), pady=7)
-        auth_box = ttk.Combobox(dialog, textvariable=values["auth"], values=("api_key_header", "bearer"), state="readonly", style="Agent.TCombobox")
-        auth_box.grid(row=6, column=1, sticky="ew", pady=7, ipady=4)
-        field(7, "Header 名", values["header"])
-        field(8, "凭据（留空保持原值）", values["credential"], secret=True)
+        tk.Label(dialog, text="数据协议", bg=self.colors.paper, fg=self.colors.ink, font=("Microsoft YaHei UI", 9, "bold")).grid(row=6, column=0, sticky="w", padx=(0, 14), pady=7)
+        type_box = ttk.Combobox(dialog, textvariable=values["type"], values=("standard-http-v2", "standard-http-v1"), state="readonly", style="Agent.TCombobox")
+        type_box.grid(row=6, column=1, sticky="ew", pady=7, ipady=4)
 
-        tk.Label(dialog, text="媒体域名白名单", bg=self.colors.paper, fg=self.colors.ink, font=("Microsoft YaHei UI", 9, "bold")).grid(row=9, column=0, sticky="nw", padx=(0, 14), pady=7)
+        tk.Label(dialog, text="认证类型", bg=self.colors.paper, fg=self.colors.ink, font=("Microsoft YaHei UI", 9, "bold")).grid(row=7, column=0, sticky="w", padx=(0, 14), pady=7)
+        auth_box = ttk.Combobox(dialog, textvariable=values["auth"], values=("api_key_header", "bearer"), state="readonly", style="Agent.TCombobox")
+        auth_box.grid(row=7, column=1, sticky="ew", pady=7, ipady=4)
+        field(8, "Header 名", values["header"])
+        field(9, "凭据（留空保持原值）", values["credential"], secret=True)
+
+        tk.Label(dialog, text="媒体域名白名单", bg=self.colors.paper, fg=self.colors.ink, font=("Microsoft YaHei UI", 9, "bold")).grid(row=10, column=0, sticky="nw", padx=(0, 14), pady=7)
         hosts = tk.Text(dialog, height=4, bg=self.colors.panel, fg=self.colors.ink, relief="solid", bd=1, font=("Consolas", 9))
-        hosts.grid(row=9, column=1, sticky="nsew", pady=7)
+        hosts.grid(row=10, column=1, sticky="nsew", pady=7)
         hosts.insert("1.0", "\n".join((source or {}).get("allowedHosts", [])))
 
         checks = tk.Frame(dialog, bg=self.colors.paper)
-        checks.grid(row=10, column=1, sticky="w", pady=7)
+        checks.grid(row=11, column=1, sticky="w", pady=7)
         tk.Checkbutton(checks, text="启用来源", variable=values["enabled"], bg=self.colors.paper, activebackground=self.colors.paper, font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 18))
         tk.Checkbutton(checks, text="允许私网媒体", variable=values["private"], bg=self.colors.paper, activebackground=self.colors.paper, font=("Microsoft YaHei UI", 9)).pack(side="left")
 
         actions = tk.Frame(dialog, bg=self.colors.paper)
-        actions.grid(row=11, column=0, columnspan=2, sticky="e", pady=(16, 0))
+        actions.grid(row=12, column=0, columnspan=2, sticky="e", pady=(16, 0))
         self._button(actions, "取消", dialog.destroy, alt=True).pack(side="left", padx=6)
 
         def save():
@@ -861,6 +1442,7 @@ class NativeAdminWindow:
             payload = {
                 "id": source_id,
                 "name": values["name"].get().strip(),
+                "type": values["type"].get(),
                 "baseUrl": base_url,
                 "enabled": values["enabled"].get(),
                 "weight": values["weight"].get().strip(),
@@ -909,7 +1491,7 @@ class NativeAdminWindow:
         save_button = self._button(actions, "保存并应用", save)
         save_button.pack(side="left", padx=6)
         dialog.columnconfigure(1, weight=1)
-        dialog.rowconfigure(9, weight=1)
+        dialog.rowconfigure(10, weight=1)
 
     def _selected_source_id(self) -> str | None:
         selected = self.source_tree.selection() if hasattr(self, "source_tree") else ()
@@ -918,6 +1500,24 @@ class NativeAdminWindow:
     def _selected_source(self) -> dict | None:
         source_id = self._selected_source_id()
         return next((item for item in self._sources if item.get("id") == source_id), None)
+
+    def _selected_profile_id(self) -> str | None:
+        selected = self.connector_tree.selection() if hasattr(self, "connector_tree") else ()
+        return selected[0] if selected else None
+
+    def _selected_profile(self) -> dict | None:
+        profile_id = self._selected_profile_id()
+        return next((item for item in self._profiles if item.get("id") == profile_id), None)
+
+    def _selected_task(self) -> dict | None:
+        selected = self.task_tree.selection() if hasattr(self, "task_tree") else ()
+        if not selected:
+            return None
+        try:
+            index = int(selected[0].split("-", 1)[1])
+        except (ValueError, IndexError):
+            return None
+        return self._tasks[index] if 0 <= index < len(self._tasks) else None
 
     def notice(self, message: str, kind: str = "info") -> None:
         color = {
@@ -968,7 +1568,7 @@ def run_native_admin(base_url: str) -> int:
         root = tk.Tk()
         root.withdraw()
         messagebox.showerror(
-            "无法启动朋友圈发布站",
+            "无法启动微信小助手",
             "本机 Agent 未能在 15 秒内启动。请检查 agent.log 或重新安装。",
             parent=root,
         )

@@ -1,6 +1,11 @@
-import numpy as np
+import sys
+import types
+from pathlib import Path
 
-from src.locator.ocr_locator import PaddleOCREngine
+import numpy as np
+import pytest
+
+from src.locator.ocr_locator import PaddleOCREngine, resolve_ocr_model_root
 
 
 class FakeV3Result:
@@ -56,3 +61,61 @@ def test_recognize_keeps_paddleocr_v2_compatibility() -> None:
     assert blocks[0].text == "朋友圈"
     assert blocks[0].width == 174
     assert blocks[0].height == 74
+
+
+def _create_fake_models(root: Path) -> None:
+    for model_name in ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"):
+        model_dir = root / model_name
+        model_dir.mkdir(parents=True)
+        for filename in ("inference.json", "inference.pdiparams", "inference.yml"):
+            (model_dir / filename).write_bytes(b"test")
+
+
+def test_resolve_ocr_model_root_from_environment(tmp_path, monkeypatch) -> None:
+    _create_fake_models(tmp_path)
+    monkeypatch.setenv("WECHAT_PUBLISHER_OCR_MODEL_ROOT", str(tmp_path))
+
+    assert resolve_ocr_model_root() == tmp_path.resolve()
+
+
+def test_frozen_runtime_requires_complete_bundled_models(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("WECHAT_PUBLISHER_OCR_MODEL_ROOT", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    with pytest.raises(RuntimeError, match="Bundled OCR models"):
+        resolve_ocr_model_root()
+
+
+def test_frozen_runtime_uses_bundled_models(tmp_path, monkeypatch) -> None:
+    model_root = tmp_path / "models" / "paddleocr"
+    _create_fake_models(model_root)
+    monkeypatch.delenv("WECHAT_PUBLISHER_OCR_MODEL_ROOT", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    assert resolve_ocr_model_root() == model_root
+
+
+def test_paddleocr_initialization_failure_is_latched(monkeypatch) -> None:
+    attempts = []
+
+    def fail_initialization(**kwargs):
+        attempts.append(kwargs)
+        raise RuntimeError("The pipeline (OCR) does not exist!")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "paddleocr",
+        types.SimpleNamespace(PaddleOCR=fail_initialization),
+    )
+    monkeypatch.setattr(
+        "src.locator.ocr_locator.resolve_ocr_model_root",
+        lambda config=None: None,
+    )
+    engine = PaddleOCREngine()
+    image = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    assert engine.recognize(image) == []
+    assert engine.recognize(image) == []
+    assert len(attempts) == 1

@@ -4,7 +4,8 @@
     {
       "id": "auto-content-production",
       "name": "智能内容运营平台",
-      "baseUrl": "https://zcnvn9mqrac4.aiforce.cloud/app/app_17cxjhfjvpf/openapi/publisher-agent/v1",
+      "type": "standard-http-v2",
+      "baseUrl": "https://zcnvn9mqrac4.aiforce.cloud/app/app_17cxjhfjvpf/openapi/publisher-agent/v2",
       "enabled": true,
       "weight": 1,
       "accountKey": "wechat-main",

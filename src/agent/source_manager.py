@@ -12,9 +12,16 @@ from .config import AgentConfig, SourceConfig
 from .credential_store import CredentialStore
 from .ledger import AgentLedger
 from .models import AgentSnapshot, ClaimResponse, Lease, TaskEvent
+from .models_v2 import (
+    PublisherV2Account,
+    PublisherV2ClaimResponse,
+    PublisherV2Executor,
+    PublisherV2TaskEvent,
+)
 from .scheduler import WeightedFairScheduler
 from .sources.base import SourceError, SourceMeta
 from .sources.standard_http_v1 import StandardHttpSource
+from .sources.standard_http_v2 import StandardHttpV2Source
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +56,7 @@ class SourceManager:
         credential_store: CredentialStore,
         ledger: AgentLedger,
         *,
-        source_factory: Callable[..., StandardHttpSource] = StandardHttpSource,
+        source_factory: Callable[..., StandardHttpSource] | None = None,
     ) -> None:
         self.config = config
         self.credential_store = credential_store
@@ -58,7 +65,7 @@ class SourceManager:
         self.scheduler = WeightedFairScheduler()
         self.instance_id = f"instance-{uuid4().hex[:12]}"
         self._lock = threading.RLock()
-        self._sources: dict[str, StandardHttpSource] = {}
+        self._sources: dict[str, StandardHttpSource | StandardHttpV2Source] = {}
         self._runtime: dict[str, SourceRuntime] = {}
         self.reload(config)
 
@@ -87,7 +94,12 @@ class SourceManager:
                     continue
                 if current is not None:
                     current.close()
-                self._sources[item.id] = self.source_factory(
+                factory = self.source_factory or (
+                    StandardHttpV2Source
+                    if item.type == "standard-http-v2"
+                    else StandardHttpSource
+                )
+                self._sources[item.id] = factory(
                     item,
                     config,
                     self.credential_store,
@@ -116,7 +128,7 @@ class SourceManager:
                 )
             self.scheduler.remove_missing(configured_ids)
 
-    def source(self, source_id: str) -> StandardHttpSource:
+    def source(self, source_id: str) -> StandardHttpSource | StandardHttpV2Source:
         with self._lock:
             try:
                 return self._sources[source_id]
@@ -142,7 +154,7 @@ class SourceManager:
         return result
 
     def heartbeat_all(self, snapshot: AgentSnapshot) -> None:
-        for config in self._enabled_configs(include_backoff=False):
+        for config in self._enabled_configs(include_backoff=False, source_type="standard-http-v1"):
             started = time.perf_counter()
             try:
                 self.source(config.id).heartbeat(snapshot)
@@ -157,7 +169,9 @@ class SourceManager:
             )
 
     def claim_next(self) -> tuple[str, ClaimResponse] | None:
-        candidates = self.scheduler.candidates(self._enabled_configs(include_backoff=False))
+        candidates = self.scheduler.candidates(
+            self._enabled_configs(include_backoff=False, source_type="standard-http-v1")
+        )
         for config in candidates:
             started = time.perf_counter()
             try:
@@ -191,6 +205,110 @@ class SourceManager:
             return config.id, claim
         return None
 
+    def heartbeat_v2(
+        self,
+        snapshot: AgentSnapshot,
+        executors: list[PublisherV2Executor],
+        accounts: list[PublisherV2Account],
+    ) -> None:
+        for config in self._enabled_configs(
+            include_backoff=False,
+            source_type="standard-http-v2",
+        ):
+            started = time.perf_counter()
+            try:
+                adapter = self.source(config.id)
+                if not isinstance(adapter, StandardHttpV2Source) and self.source_factory is None:
+                    continue
+                adapter.heartbeat(snapshot, executors, accounts)
+            except SourceError as error:
+                self._record_error(config.id, error, "heartbeat", started)
+                continue
+            self._record_success(
+                config.id,
+                heartbeat=True,
+                operation="heartbeat",
+                started=started,
+            )
+
+    def claim_next_v2(
+        self,
+        executors: list[PublisherV2Executor],
+        accounts: list[PublisherV2Account],
+    ) -> tuple[str, PublisherV2ClaimResponse] | None:
+        configs = self.scheduler.candidates(
+            self._enabled_configs(include_backoff=False, source_type="standard-http-v2")
+        )
+        for config in configs:
+            adapter = self.source(config.id)
+            for executor in executors:
+                if executor.status != "ready":
+                    continue
+                started = time.perf_counter()
+                try:
+                    claim = adapter.claim(executor, accounts)
+                except SourceError as error:
+                    if error.code in {
+                        "ACCOUNT_MISMATCH",
+                        "CAPABILITY_MISMATCH",
+                        "CONNECTOR_UNAVAILABLE",
+                    }:
+                        logger.info(
+                            "v2 route skipped sourceId=%s executor=%s code=%s",
+                            config.id,
+                            executor.executor_instance_id,
+                            error.code,
+                        )
+                        continue
+                    self._record_error(config.id, error, "claim", started)
+                    break
+                self._record_success(
+                    config.id,
+                    claimed=claim is not None,
+                    operation="claim",
+                    started=started,
+                )
+                if claim is None:
+                    continue
+                self.scheduler.mark_served(config)
+                self.ledger.update_source_state(
+                    config.id,
+                    health_state="healthy",
+                    claimed=True,
+                    served=True,
+                )
+                return config.id, claim
+        return None
+
+    def renew_lease_v2(
+        self,
+        source_id: str,
+        task_id: str,
+        lease: Lease,
+        executor_instance_id: str,
+    ) -> Lease:
+        started = time.perf_counter()
+        try:
+            renewed = self.source(source_id).renew_lease_v2(
+                task_id,
+                lease,
+                executor_instance_id,
+            )
+        except SourceError as error:
+            self._record_error(source_id, error, "renew", started)
+            raise
+        self._record_success(source_id, operation="renew", started=started)
+        return renewed
+
+    def send_event_v2(self, source_id: str, event: PublisherV2TaskEvent) -> None:
+        started = time.perf_counter()
+        try:
+            self.source(source_id).send_event_v2(event)
+        except SourceError as error:
+            self._record_error(source_id, error, "event", started)
+            raise
+        self._record_success(source_id, operation="event", started=started)
+
     def renew_lease(self, source_id: str, task_id: str, lease: Lease) -> Lease:
         started = time.perf_counter()
         try:
@@ -216,6 +334,7 @@ class SourceManager:
                 {
                     "id": source.id,
                     "name": source.name,
+                    "type": source.type,
                     "enabled": source.enabled,
                     "weight": source.weight,
                     "baseUrl": str(source.base_url),
@@ -257,12 +376,18 @@ class SourceManager:
                 source.close()
             self._sources.clear()
 
-    def _enabled_configs(self, *, include_backoff: bool) -> list[SourceConfig]:
+    def _enabled_configs(
+        self,
+        *,
+        include_backoff: bool,
+        source_type: str | None = None,
+    ) -> list[SourceConfig]:
         with self._lock:
             return [
                 source
                 for source in self.config.sources
                 if source.enabled
+                and (source_type is None or source.type == source_type)
                 and (include_backoff or self._runtime[source.id].available)
             ]
 

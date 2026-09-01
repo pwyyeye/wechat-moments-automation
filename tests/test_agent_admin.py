@@ -1,10 +1,13 @@
 import json
+from datetime import timedelta
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from src.agent.app import PublisherAgentApp
 from src.agent.config import DEFAULT_SOURCE_ID, AgentConfig, default_source_config, save_config
 from src.agent.credential_store import IdentityPayloadProtector, InMemoryCredentialStore
+from src.agent.local_schedule import utc_now
 from src.agent.models import AgentSnapshot
 from src.agent.sources.base import SourceMeta
 
@@ -106,6 +109,69 @@ def test_loopback_admin_configures_multiple_sources_without_plaintext_secrets(tm
     app.stop()
 
 
+def test_loopback_admin_creates_updates_and_cancels_local_schedule(tmp_path):
+    class IdentifiedExecutor(FakeExecutor):
+        def snapshot(self):
+            return AgentSnapshot(
+                running=True,
+                loggedIn=True,
+                momentsWindowReady=True,
+                wechatVersion="4.1.13.12",
+                wechatNickname="番石榴",
+                wechatId="higuava001",
+                interactiveSession=True,
+                desktopUnlocked=True,
+            )
+
+    image_path = tmp_path / "schedule.png"
+    Image.new("RGB", (16, 16), color="green").save(image_path, format="PNG")
+    app = PublisherAgentApp(
+        tmp_path / "config.yaml",
+        executor=IdentifiedExecutor(),
+        credential_store=InMemoryCredentialStore(),
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+    client = TestClient(app.admin_app)
+    headers = {"X-Local-Agent-Action": "confirmed"}
+    created = client.post(
+        "/api/local-schedules",
+        headers=headers,
+        json={
+            "text": "定时文案",
+            "imagePaths": [str(image_path)],
+            "scheduledAt": (utc_now() + timedelta(minutes=10)).isoformat(),
+        },
+    )
+
+    assert created.status_code == 201
+    body = created.json()
+    assert body["kind"] == "local_schedule"
+    assert body["target_nickname"] == "番石榴"
+    assert body["media_paths"][0] != str(image_path)
+
+    updated = client.put(
+        f"/api/local-schedules/{body['task_id']}",
+        headers=headers,
+        json={
+            "text": "更新文案",
+            "scheduledAt": (utc_now() + timedelta(minutes=20)).isoformat(),
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["text"] == "更新文案"
+    tasks = client.get("/api/tasks").json()
+    assert any(item["task_id"] == body["task_id"] for item in tasks)
+
+    cancelled = client.post(
+        f"/api/local-schedules/{body['task_id']}/cancel",
+        headers=headers,
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["state"] == "cancelled"
+    app.stop()
+
+
 def test_run_forever_does_not_require_console_logging(tmp_path, monkeypatch):
     app = PublisherAgentApp(
         tmp_path / "config.yaml",
@@ -133,6 +199,45 @@ def test_run_forever_does_not_require_console_logging(tmp_path, monkeypatch):
     assert captured["config"].log_config is None
     assert captured["config"].access_log is False
     assert captured["run"] is True
+
+
+def test_background_start_never_creates_wechat_identity_thread(tmp_path, monkeypatch):
+    app = PublisherAgentApp(
+        tmp_path / "config.yaml",
+        executor=FakeExecutor(),
+        credential_store=InMemoryCredentialStore(),
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+    created = []
+
+    class FakeThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+            created.append(self)
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def join(self, timeout=None):
+            pass
+
+    monkeypatch.setattr("src.agent.app.threading.Thread", FakeThread)
+    monkeypatch.setattr(app.connector_registry, "start", lambda: None)
+
+    app.start_background()
+
+    assert [thread.name for thread in created] == [
+        "publisher-worker",
+        "publisher-heartbeat",
+    ]
+    assert not hasattr(app, "_identity_thread")
+    app.stop()
 
 
 def test_admin_exposes_safe_shutdown_and_manual_identity_actions(tmp_path, monkeypatch):
@@ -371,4 +476,42 @@ def test_invalid_bootstrap_does_not_take_down_local_admin(tmp_path):
     assert TestClient(app.admin_app).get("/api/health").json()["ok"] is True
     assert bootstrap_path.exists()
     assert app.source_manager.status()[0]["healthState"] == "unconfigured"
+    app.stop()
+
+
+def test_admin_manages_multiple_wechat_sync_profiles_and_protects_token(tmp_path):
+    credentials = InMemoryCredentialStore()
+    app = PublisherAgentApp(
+        tmp_path / "config.yaml",
+        executor=FakeExecutor(),
+        credential_store=credentials,
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+    client = TestClient(app.admin_app)
+    profile = {
+        "id": "profile-b",
+        "name": "Chrome B",
+        "enabled": True,
+        "bridgePort": 9537,
+        "platforms": ["zhihu", "juejin"],
+        "chromeExecutable": None,
+        "userDataDir": "D:/browser-data/profile-b",
+        "profileDirectory": "Default",
+        "extensionPath": None,
+        "autoLaunch": False,
+    }
+
+    assert client.post("/api/connectors/wechatsync", json=profile).status_code == 201
+    profiles = client.get("/api/connectors/wechatsync").json()
+    assert {item["id"] for item in profiles} == {"chrome-default", "profile-b"}
+    assert client.get("/api/connectors/wechatsync/profile-b/token").status_code == 403
+    token = client.get(
+        "/api/connectors/wechatsync/profile-b/token",
+        headers={"X-Local-Agent-Action": "confirmed"},
+    ).json()["token"]
+    assert len(token) >= 32
+    assert token not in (tmp_path / "config.yaml").read_text(encoding="utf-8")
+
+    assert client.delete("/api/connectors/wechatsync/profile-b").status_code == 200
     app.stop()

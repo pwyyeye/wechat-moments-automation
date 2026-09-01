@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+import os
 
 from PyInstaller.utils.hooks import (
     collect_all,
@@ -44,6 +45,29 @@ except Exception:
 # runtime. PyInstaller follows the Python imports but does not collect these
 # YAML files automatically, so the packaged OCR engine cannot find "OCR".
 datas += collect_data_files("paddlex", includes=["configs/**"])
+
+# Ship the two OCR models used by WeChat nickname recognition. Build machines
+# may override the source directory without committing large model binaries.
+ocr_model_root = Path(
+    os.environ.get(
+        "WECHAT_PUBLISHER_OCR_MODEL_ROOT",
+        Path.home() / ".paddlex" / "official_models",
+    )
+)
+ocr_model_names = ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec")
+ocr_model_files = ("inference.json", "inference.pdiparams", "inference.yml")
+for model_name in ocr_model_names:
+    model_path = ocr_model_root / model_name
+    missing = [name for name in ocr_model_files if not (model_path / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"OCR model {model_name} is incomplete at {model_path}; missing: {missing}"
+        )
+    for filename in ocr_model_files:
+        datas.append((
+            str(model_path / filename),
+            f"models\\paddleocr\\{model_name}",
+        ))
 
 # PaddleX validates OCR extras with importlib.metadata before constructing the
 # pipeline. Preserve both the import modules and their distribution metadata.

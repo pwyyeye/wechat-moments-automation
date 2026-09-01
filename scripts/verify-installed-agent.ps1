@@ -7,11 +7,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$installRoot = Join-Path $env:LOCALAPPDATA "Programs\WechatPublisherAgent"
+$installRoot = Split-Path -Parent $PSScriptRoot
 $agentExe = Join-Path $installRoot "WechatPublisherAgent.exe"
 $helperExe = Join-Path $installRoot "_internal\src\cs_uia_service\publish\WeChatUIA.exe"
 $momentsTemplate = Join-Path $installRoot "_internal\templates\icons\moments_tab.png"
-$taskName = "WechatPublisherAgent"
+$startupName = "WechatPublisherAgent"
 $failures = [System.Collections.Generic.List[string]]::new()
 
 if (-not (Test-Path -LiteralPath $agentExe)) {
@@ -24,14 +24,14 @@ if (-not (Test-Path -LiteralPath $momentsTemplate)) {
     $failures.Add("Moments navigation template is missing.")
 }
 
-$scheduledTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-if (-not $scheduledTask) {
-    $failures.Add("User logon scheduled task is missing.")
-} else {
-    $configuredAction = [string]$scheduledTask.Actions[0].Execute
-    if ($configuredAction.Trim('"') -ne $agentExe) {
-        $failures.Add("Scheduled task points to an unexpected executable.")
-    }
+$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$startupCommand = Get-ItemPropertyValue `
+    -Path $runKey `
+    -Name $startupName `
+    -ErrorAction SilentlyContinue
+$expectedStartupCommand = '"' + $agentExe + '" --agent'
+if ($startupCommand -ne $expectedStartupCommand) {
+    $failures.Add("User logon startup registry entry is missing or points to an unexpected executable.")
 }
 
 $status = $null
@@ -82,11 +82,11 @@ $result = [ordered]@{
         uiaHelper = Test-Path -LiteralPath $helperExe
         momentsTemplate = Test-Path -LiteralPath $momentsTemplate
     }
-    scheduledTask = if ($scheduledTask) {
+    startup = if ($startupCommand) {
         [ordered]@{
-            name = $scheduledTask.TaskName
-            state = [string]$scheduledTask.State
-            action = [string]$scheduledTask.Actions[0].Execute
+            type = "hkcu_run"
+            name = $startupName
+            command = $startupCommand
         }
     } else {
         $null

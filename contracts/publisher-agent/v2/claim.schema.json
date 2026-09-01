@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auto-content.local/contracts/publisher-agent/v2/claim.schema.json",
+  "type": "object",
+  "required": ["protocolVersion", "agentId", "instanceId", "executorInstanceId", "currentAccounts", "maxTasks", "requestedLeaseSeconds"],
+  "properties": {
+    "protocolVersion": { "const": "2.0" },
+    "agentId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "instanceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "executorInstanceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "currentAccounts": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["platform", "accountStableId"],
+        "properties": {
+          "platform": { "type": "string", "minLength": 1, "maxLength": 50 },
+          "accountStableId": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "profileId": { "type": ["string", "null"], "maxLength": 128 }
+        }
+      }
+    },
+    "maxTasks": { "const": 1 },
+    "requestedLeaseSeconds": { "type": "integer", "minimum": 30, "maximum": 600 }
+  }
+}

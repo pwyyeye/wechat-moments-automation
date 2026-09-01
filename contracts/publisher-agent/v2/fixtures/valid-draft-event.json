@@ -1,0 +1,27 @@
+{
+  "specVersion": "content-publisher/event-v2",
+  "eventId": "event-01",
+  "taskId": "task-01",
+  "idempotencyKey": "publish-task-01",
+  "leaseToken": "lease-token",
+  "agentId": "agent-windows-01",
+  "instanceId": "process-01",
+  "executorInstanceId": "wechatsync:chrome-profile-a",
+  "type": "draft_created",
+  "attempt": 1,
+  "occurredAt": "2026-08-31T03:31:00Z",
+  "details": {
+    "stage": "create_draft",
+    "message": "知乎草稿已创建"
+  },
+  "result": {
+    "output": {
+      "syncId": "sync-01",
+      "postId": "draft-01",
+      "postUrl": "https://example.test/draft/01",
+      "draftOnly": true
+    },
+    "error": null,
+    "evidence": []
+  }
+}

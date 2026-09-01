@@ -39,6 +39,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 class UIABridge:
     """
@@ -245,6 +247,7 @@ class UIABridge:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            creationflags=_CREATE_NO_WINDOW,
         )
 
         def _read_output():
@@ -302,7 +305,7 @@ class UIABridge:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                creationflags=subprocess.CREATE_NO_WINDOW,  # 不弹控制台窗口
+                creationflags=_CREATE_NO_WINDOW,
             )
 
             if result.returncode != 0:

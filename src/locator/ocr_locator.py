@@ -11,17 +11,57 @@ OCR 文字定位器 —— 版本无关的界面元素定位核心。
 Author: 版本无关微信自动化系统
 """
 
-import time
 import logging
-from typing import Optional, List, Tuple, Dict
+import os
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pyautogui
-from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+OCR_MODEL_ENV = "WECHAT_PUBLISHER_OCR_MODEL_ROOT"
+OCR_MODEL_NAMES = (
+    "PP-OCRv6_medium_det",
+    "PP-OCRv6_medium_rec",
+)
+OCR_MODEL_REQUIRED_FILES = (
+    "inference.json",
+    "inference.pdiparams",
+    "inference.yml",
+)
+
+
+def _is_complete_ocr_model_root(root: Path) -> bool:
+    return all(
+        (root / model_name / filename).is_file()
+        for model_name in OCR_MODEL_NAMES
+        for filename in OCR_MODEL_REQUIRED_FILES
+    )
+
+
+def resolve_ocr_model_root(config: dict = None) -> Optional[Path]:
+    """Resolve explicitly configured or PyInstaller-bundled OCR models."""
+    config = config or {}
+    configured = config.get("model_root") or os.environ.get(OCR_MODEL_ENV)
+    if configured:
+        root = Path(configured).expanduser().resolve()
+        if not _is_complete_ocr_model_root(root):
+            raise RuntimeError(f"OCR model directory is incomplete: {root}")
+        return root
+
+    if getattr(sys, "frozen", False):
+        root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "models" / "paddleocr"
+        if not _is_complete_ocr_model_root(root):
+            raise RuntimeError(f"Bundled OCR models are missing or incomplete: {root}")
+        return root
+
+    source_root = Path(__file__).resolve().parents[2] / "models" / "paddleocr"
+    return source_root if _is_complete_ocr_model_root(source_root) else None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -60,23 +100,45 @@ class PaddleOCREngine:
         self._ocr = None
         self._config = config or {}
         self._api_version = 0
+        self._initialization_error: Exception | None = None
+        self._recognition_error_logged = False
 
     @property
     def ocr(self):
         """延迟加载 OCR 模型"""
+        if self._initialization_error is not None:
+            raise RuntimeError("PaddleOCR 本进程初始化失败，需重启 Agent 后重试") from (
+                self._initialization_error
+            )
         if self._ocr is None:
             try:
                 from paddleocr import PaddleOCR
                 try:
-                    self._ocr = PaddleOCR(
-                        lang=self._config.get('lang', 'ch'),
-                        use_doc_orientation_classify=self._config.get(
+                    kwargs = {
+                        'use_doc_orientation_classify': self._config.get(
                             'use_doc_orientation_classify', False
                         ),
-                        use_doc_unwarping=self._config.get('use_doc_unwarping', False),
-                        use_textline_orientation=self._config.get('use_angle_cls', False),
-                        enable_mkldnn=self._config.get('enable_mkldnn', False),
-                    )
+                        'use_doc_unwarping': self._config.get(
+                            'use_doc_unwarping', False
+                        ),
+                        'use_textline_orientation': self._config.get(
+                            'use_angle_cls', False
+                        ),
+                        'enable_mkldnn': self._config.get('enable_mkldnn', False),
+                    }
+                    model_root = resolve_ocr_model_root(self._config)
+                    if model_root is not None:
+                        kwargs.update({
+                            'text_detection_model_dir': str(
+                                model_root / 'PP-OCRv6_medium_det'
+                            ),
+                            'text_recognition_model_dir': str(
+                                model_root / 'PP-OCRv6_medium_rec'
+                            ),
+                        })
+                    else:
+                        kwargs['lang'] = self._config.get('lang', 'ch')
+                    self._ocr = PaddleOCR(**kwargs)
                     self._api_version = 3
                 except TypeError:
                     self._ocr = PaddleOCR(
@@ -91,6 +153,7 @@ class PaddleOCREngine:
                     "如果安装失败，尝试: pip install paddlepaddle 后再 pip install paddleocr"
                 )
             except Exception as e:
+                self._initialization_error = e
                 logger.exception(f"PaddleOCR 初始化失败: {e}")
                 raise
         return self._ocr
@@ -103,7 +166,9 @@ class PaddleOCREngine:
                 return self._parse_v3_results(ocr.predict(image))
             result = ocr.ocr(image, cls=False)
         except Exception as e:
-            logger.error(f"OCR 识别异常: {e}")
+            if not self._recognition_error_logged:
+                logger.error(f"OCR 识别异常，后续相同错误不再重复记录: {e}")
+                self._recognition_error_logged = True
             return []
 
         if not result or not result[0]:

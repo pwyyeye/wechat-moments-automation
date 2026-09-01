@@ -1,0 +1,41 @@
+{
+  "protocolVersion": "2.0",
+  "agent": {
+    "agentId": "agent-windows-01",
+    "instanceId": "process-01",
+    "displayName": "Desktop A",
+    "agentVersion": "0.4.3",
+    "os": "Windows 11",
+    "interactiveSession": true,
+    "desktopUnlocked": true
+  },
+  "executors": [
+    {
+      "executorInstanceId": "wechatsync:chrome-profile-a",
+      "providerKey": "wechatsync",
+      "executionMode": "browser_bridge",
+      "profileId": "chrome-profile-a",
+      "connectorVersion": "2.0.0",
+      "status": "ready",
+      "capabilities": [
+        {
+          "platform": "zhihu",
+          "operations": ["create_draft"],
+          "contentTypes": ["article"]
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "executorInstanceId": "wechatsync:chrome-profile-a",
+      "platform": "zhihu",
+      "accountStableId": "zhihu-user-42",
+      "nickname": "示例知乎账号",
+      "profileId": "chrome-profile-a",
+      "authState": "authenticated",
+      "status": "ready"
+    }
+  ],
+  "occurredAt": "2026-08-31T03:30:00Z"
+}
