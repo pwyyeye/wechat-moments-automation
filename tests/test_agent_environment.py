@@ -7,6 +7,7 @@ import numpy as np
 
 from src.agent.environment import (
     _classify_navigation_candidate,
+    _discover_moments_match_from_blocks,
     _locate_icon_candidates,
     _locate_moments_icon,
     _moments_window_ready,
@@ -68,6 +69,51 @@ def test_tooltip_label_is_extracted_from_confident_ocr_blocks() -> None:
     ]
 
     assert _tooltip_label_from_blocks(blocks) == "朋友圈"
+
+
+def test_discover_moments_text_requires_semantic_menu_context() -> None:
+    blocks = [
+        SimpleNamespace(text="发现", x=180, y=30, confidence=0.99),
+        SimpleNamespace(text="朋友圈", x=220, y=100, confidence=0.98),
+        SimpleNamespace(text="视频号", x=220, y=160, confidence=0.97),
+        SimpleNamespace(text="搜一搜", x=220, y=220, confidence=0.96),
+    ]
+
+    assert _discover_moments_match_from_blocks(
+        blocks,
+        panel_width=600,
+        panel_height=400,
+        nav_width=100,
+    ) == (220, 100, 0.98)
+
+
+def test_discover_moments_text_rejects_unrelated_chat_text() -> None:
+    blocks = [
+        SimpleNamespace(text="朋友圈", x=220, y=100, confidence=0.98),
+        SimpleNamespace(text="今天发现一个游戏", x=220, y=160, confidence=0.97),
+    ]
+
+    assert _discover_moments_match_from_blocks(
+        blocks,
+        panel_width=600,
+        panel_height=400,
+        nav_width=100,
+    ) is None
+
+
+def test_discover_moments_text_rejects_navigation_tooltip() -> None:
+    blocks = [
+        SimpleNamespace(text="朋友圈", x=80, y=100, confidence=0.98),
+        SimpleNamespace(text="发现", x=180, y=30, confidence=0.99),
+        SimpleNamespace(text="视频号", x=220, y=160, confidence=0.97),
+    ]
+
+    assert _discover_moments_match_from_blocks(
+        blocks,
+        panel_width=600,
+        panel_height=400,
+        nav_width=100,
+    ) is None
 
 
 def test_bundled_direct_and_discover_navigation_templates_are_loadable() -> None:

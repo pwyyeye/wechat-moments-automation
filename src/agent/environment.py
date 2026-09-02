@@ -162,6 +162,76 @@ def _tooltip_label_from_blocks(blocks: Any) -> str | None:
     return None
 
 
+def _discover_moments_match_from_blocks(
+    blocks: Any,
+    *,
+    panel_width: int,
+    panel_height: int,
+    nav_width: int,
+) -> tuple[int, int, float] | None:
+    """Locate the semantic Moments row only inside a confirmed Discover menu."""
+    if panel_width <= 0 or panel_height <= 0:
+        return None
+
+    content_left = nav_width + max(8, nav_width // 12)
+    content_right = max(content_left + 1, int(panel_width * 0.92))
+    content_bottom = max(1, int(panel_height * 0.92))
+    visible: list[tuple[Any, str]] = []
+    for block in blocks:
+        if getattr(block, "confidence", 0.0) < 0.5:
+            continue
+        text = "".join(str(getattr(block, "text", "")).split())
+        x = int(getattr(block, "x", -1))
+        y = int(getattr(block, "y", -1))
+        if not (content_left <= x <= content_right and 0 <= y <= content_bottom):
+            continue
+        visible.append((block, text))
+
+    # A standalone "朋友圈" can appear in chat text. Requiring two other
+    # Discover entries prevents the fallback from clicking unrelated content.
+    discover_labels = {"发现", "视频号", "搜一搜", "游戏", "小程序"}
+    context_labels = {text for _, text in visible if text in discover_labels}
+    if len(context_labels) < 2:
+        return None
+
+    candidates = [
+        block
+        for block, text in visible
+        if text == "朋友圈" and getattr(block, "confidence", 0.0) >= 0.55
+    ]
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda block: getattr(block, "confidence", 0.0))
+    return int(best.x), int(best.y), float(best.confidence)
+
+
+def _locate_discover_moments_text(
+    panel: Any,
+    *,
+    nav_width: int,
+) -> tuple[int, int, float] | None:
+    """Use bundled Chinese OCR when the Discover row icon has changed."""
+    from .wechat_identity import _get_identity_ocr_engine
+
+    try:
+        blocks = _get_identity_ocr_engine().recognize(panel)
+        match = _discover_moments_match_from_blocks(
+            blocks,
+            panel_width=int(panel.shape[1]),
+            panel_height=int(panel.shape[0]),
+            nav_width=nav_width,
+        )
+        logger.info(
+            "发现页 OCR 定位朋友圈: match=%s texts=%s",
+            match or "none",
+            [str(getattr(block, "text", ""))[:24] for block in blocks[:12]],
+        )
+        return match
+    except Exception as error:
+        logger.warning("发现页 OCR 定位朋友圈失败: %s", error)
+        return None
+
+
 def _read_hover_tooltip(
     left: int,
     top: int,
@@ -331,10 +401,18 @@ def _open_moments_by_template() -> bool:
             initial_panel,
             nested_moments_template,
         )
+        nested_method = "icon-template"
+        if nested_match is None:
+            nested_match = _locate_discover_moments_text(
+                initial_panel,
+                nav_width=nav_width,
+            )
+            nested_method = "ocr-text"
         if nested_match is not None:
             click_match(left, top, nested_match)
             logger.info(
-                "已从当前发现页打开朋友圈，匹配置信度 %.3f",
+                "已从当前发现页打开朋友圈，method=%s confidence=%.3f",
+                nested_method,
                 nested_match[2],
             )
             return _wait_for_moments_window(3.0)
@@ -426,7 +504,7 @@ def _open_moments_by_template() -> bool:
 
         # The submenu is rendered asynchronously and may shift with DPI or
         # window size, so locate its semantic icon instead of using a point.
-        for _ in range(8):
+        for attempt in range(8):
             time.sleep(0.25)
             screenshot = capture()
             discover_panel = screenshot[
@@ -437,11 +515,19 @@ def _open_moments_by_template() -> bool:
                 discover_panel,
                 nested_moments_template,
             )
+            nested_method = "icon-template"
+            if nested_match is None and attempt in {1, 5}:
+                nested_match = _locate_discover_moments_text(
+                    discover_panel,
+                    nav_width=nav_width,
+                )
+                nested_method = "ocr-text"
             if nested_match is None:
                 continue
             click_match(left, top, nested_match)
             logger.info(
-                "已通过发现页打开朋友圈，匹配置信度 %.3f",
+                "已通过发现页打开朋友圈，method=%s confidence=%.3f",
+                nested_method,
                 nested_match[2],
             )
             return _wait_for_moments_window(3.0)
