@@ -2,7 +2,7 @@
 
 版本无关的 PC 微信朋友圈自动化。事件驱动架构 + 语义级定位 + 可持久化的多数据源 Agent。
 
-[![Version](https://img.shields.io/badge/version-0.6.9-blue)]()
+[![Version](https://img.shields.io/badge/version-0.7.0-blue)]()
 [![Tests](https://img.shields.io/badge/tests-200%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![.NET](https://img.shields.io/badge/.NET-8.0-purple)]()
@@ -54,7 +54,7 @@ python main.py --agent
 python main.py --agent --agent-config path/to/config.yaml --agent-no-browser
 ```
 
-首次启动会在 `%LOCALAPPDATA%\WechatPublisherAgent\config.yaml` 生成配置并自动注册默认内容中心，随后在“微信小助手”原生控制台填入凭据即可开始工作。
+正式安装包首次启动会自动导入默认内容中心连接、登记设备并保存设备专属凭证，无需逐台创建或填写 Key。源码运行或自建数据源仍可在“微信小助手”原生控制台配置连接。
 
 ## 安全边界（改代码前必读）
 
@@ -79,6 +79,12 @@ Agent 领单前要求桌面可交互且未锁屏、微信正在运行且已登�
 | **版本追踪** | 从 PE 头读取微信版本，变化时自动重建模板库 |
 | **任务持久** | Agent 侧 SQLite 账本 + 事务化 outbox，重启不丢状态；核心侧 `state.json` 记录每日计数与历史 |
 | **通知系统** | Telegram Bot + 邮件（SMTP）+ Windows 系统通知 |
+
+### Agent 0.7.0 新增
+
+- 内容中心首次连接时自动登记设备并获取设备专属凭证，无需逐台创建或复制设备 Key
+- 设备凭证通过 Windows DPAPI 保存；心跳、领单、续租和结果回报均强制携带
+- 内容中心可单独禁用或重新启用设备，禁用后 Agent 立即停止远程通信
 
 ### Agent 0.6.9 新增
 
@@ -451,7 +457,7 @@ python main.py --test
 powershell -ExecutionPolicy Bypass -File scripts\build-agent.ps1
 ```
 
-产物：`dist\WechatPublisherAgent\WechatPublisherAgent.exe`，安装包 `packaging\output\微信小助手-0.6.9-setup.exe`。
+产物：`dist\WechatPublisherAgent\WechatPublisherAgent.exe`，安装包 `packaging\output\微信小助手-0.7.0-setup.exe`。
 
 当前本地构建产物未包含 Authenticode 签名。正式跨电脑分发前应使用组织代码签名证书签名安装包，并重新记录签名后文件的 SHA-256。
 

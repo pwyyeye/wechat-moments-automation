@@ -1,5 +1,6 @@
 param(
-    [string]$Python = ".venv\Scripts\python.exe"
+    [string]$Python = ".venv\Scripts\python.exe",
+    [string]$BootstrapFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,7 +77,12 @@ try {
     )
     $compiler = $compilerCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     if ($compiler) {
-        & $compiler "packaging\installer.iss"
+        if ($BootstrapFile) {
+            $resolvedBootstrap = (Resolve-Path -LiteralPath $BootstrapFile).Path
+            & $compiler "/DBootstrapFile=$resolvedBootstrap" "packaging\installer.iss"
+        } else {
+            & $compiler "packaging\installer.iss"
+        }
         if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed with exit code $LASTEXITCODE." }
     } else {
         Write-Warning "Inno Setup 6 was not found; the onedir build is ready but the setup EXE was not compiled."

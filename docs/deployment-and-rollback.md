@@ -4,6 +4,12 @@
 
 Run `powershell -ExecutionPolicy Bypass -File scripts/build-agent.ps1`. The build is a PyInstaller `onedir` directory at `dist/WechatPublisherAgent`; it keeps native DLLs and OCR assets beside the executable instead of unpacking them on every launch.
 
+For a managed single-file installation experience, pass a short-lived local
+bootstrap JSON path with `-BootstrapFile`. The installer embeds the file, the
+Agent imports the shared gateway credential into Windows DPAPI on first start,
+then deletes the plaintext copy. The Agent subsequently registers itself and
+receives a separate device credential automatically.
+
 Compile `packaging/installer.iss` with Inno Setup after the onedir build. The installer targets the current user, registers an `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` entry, and starts the Agent with `--agent`. It deliberately does not install a Windows Service because Session 0 cannot operate the signed-in user's WeChat desktop.
 
 ## Data and credentials
@@ -14,17 +20,18 @@ Compile `packaging/installer.iss` with Inno Setup after the onedir build. The in
 - DPAPI-encrypted source credentials: `%LOCALAPPDATA%\WechatPublisherAgent\credentials`
 - Rotating logs: `%LOCALAPPDATA%\WechatPublisherAgent\logs`
 
-For unattended deployment, place a protected `agent-bootstrap.json` beside the
-setup EXE. The installer copies it to the data directory; the Agent validates
-the bundle, saves every source credential with current-user DPAPI, updates
-`config.yaml`, and removes the copied plaintext file. The original sidecar next
-to the installer remains the deployer's responsibility and must be distributed
-through a secret-capable channel and removed after deployment. Never commit it.
-Use `packaging/agent-bootstrap.example.json` as the schema template.
+The managed release installer already embeds its protected bootstrap, so target
+computers receive only the setup EXE. On first start the Agent validates the
+bundle, saves the shared gateway credential with current-user DPAPI, updates
+`config.yaml`, removes the copied plaintext file, and automatically enrolls for
+a device-specific credential. A sidecar `agent-bootstrap.json` is only used by
+development builds that omit `-BootstrapFile`; never commit or publicly share
+one. Use `packaging/agent-bootstrap.example.json` as the schema template.
 
 Without a bootstrap bundle, the default source is created as `unconfigured`.
-This is intentional: the Agent never invents a random Bearer token. Enter a
-valid key in the native Windows control panel before enabling production polling.
+This is intentional: the Agent never invents a gateway credential. Enter a
+valid gateway credential in the native Windows control panel before production
+polling; the device credential is still generated and enrolled automatically.
 
 The uninstaller removes the executable and login task but preserves the data directory. Check the native control panel and make sure the Outbox backlog is zero before intentionally deleting that directory.
 

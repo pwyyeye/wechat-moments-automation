@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import platform
+import secrets
+import threading
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -17,7 +19,17 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def device_credential_ref(source_id: str) -> str:
+    return f"dpapi://{source_id}.device"
+
+
+def device_enrollment_marker_ref(source_id: str) -> str:
+    return f"dpapi://{source_id}.device-enrolled"
+
+
 class StandardHttpSource:
+    protocol_version = "1.0"
+
     def __init__(
         self,
         source: SourceConfig,
@@ -37,8 +49,16 @@ class StandardHttpSource:
             timeout=httpx.Timeout(15.0, connect=5.0),
             follow_redirects=False,
         )
+        self._enrollment_lock = threading.Lock()
 
-    def _headers(self, *, request_id: str, idempotency_key: str | None = None):
+    def _headers(
+        self,
+        *,
+        request_id: str,
+        idempotency_key: str | None = None,
+        include_device_credential: bool = True,
+        explicit_device_credential: str | None = None,
+    ):
         try:
             secret = self.credential_store.get(self.config.auth.credential_ref)
         except (FileNotFoundError, KeyError, ValueError) as error:
@@ -60,6 +80,19 @@ class StandardHttpSource:
             headers[self.config.auth.header_name or "X-Api-Key"] = secret
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
+        if explicit_device_credential:
+            headers["X-Agent-Credential"] = explicit_device_credential
+        elif include_device_credential:
+            try:
+                headers["X-Agent-Credential"] = self.credential_store.get(
+                    device_credential_ref(self.source_id)
+                )
+            except (FileNotFoundError, KeyError, ValueError) as error:
+                raise SourceError(
+                    "DEVICE_CREDENTIAL_MISSING",
+                    "Device enrollment has not completed.",
+                    retryable=True,
+                ) from error
         return headers
 
     def _request(
@@ -70,8 +103,13 @@ class StandardHttpSource:
         json_body=None,
         idempotency_key: str | None = None,
         allow_no_content: bool = False,
+        require_device_credential: bool = True,
+        explicit_device_credential: str | None = None,
+        allow_enrollment_retry: bool = True,
     ) -> httpx.Response:
         request_id = str(uuid4())
+        if require_device_credential:
+            self._ensure_enrolled()
         try:
             response = self.client.request(
                 method,
@@ -79,6 +117,8 @@ class StandardHttpSource:
                 headers=self._headers(
                     request_id=request_id,
                     idempotency_key=idempotency_key,
+                    include_device_credential=require_device_credential,
+                    explicit_device_credential=explicit_device_credential,
                 ),
                 json=json_body,
             )
@@ -103,6 +143,24 @@ class StandardHttpSource:
             if response.status_code in {401, 403}
             else "SOURCE_REQUEST_FAILED"
         )
+        if (
+            require_device_credential
+            and allow_enrollment_retry
+            and code == "DEVICE_NOT_ENROLLED"
+        ):
+            self.credential_store.delete(
+                device_enrollment_marker_ref(self.source_id)
+            )
+            self._ensure_enrolled()
+            return self._request(
+                method,
+                path,
+                json_body=json_body,
+                idempotency_key=idempotency_key,
+                allow_no_content=allow_no_content,
+                require_device_credential=True,
+                allow_enrollment_retry=False,
+            )
         retry_after = response.headers.get("Retry-After")
         raise SourceError(
             code,
@@ -119,8 +177,69 @@ class StandardHttpSource:
             else None,
         )
 
+    def _ensure_enrolled(self) -> None:
+        reference = device_credential_ref(self.source_id)
+        marker_reference = device_enrollment_marker_ref(self.source_id)
+        try:
+            if self.credential_store.get(marker_reference):
+                return
+        except (FileNotFoundError, KeyError, ValueError):
+            pass
+
+        with self._enrollment_lock:
+            try:
+                if self.credential_store.get(marker_reference):
+                    return
+            except (FileNotFoundError, KeyError, ValueError):
+                pass
+            try:
+                proposed_credential = self.credential_store.get(reference)
+            except (FileNotFoundError, KeyError, ValueError):
+                proposed_credential = secrets.token_urlsafe(32)
+                self.credential_store.set(reference, proposed_credential)
+            response = self._request(
+                "POST",
+                "/agents/enroll",
+                json_body={
+                    "protocolVersion": self.protocol_version,
+                    "agent": {
+                        "agentId": self.agent_config.agent.id,
+                        "instanceId": self.instance_id,
+                        "displayName": self.agent_config.agent.display_name,
+                        "agentVersion": AGENT_VERSION,
+                        "os": f"{platform.system()} {platform.release()}",
+                    },
+                    "occurredAt": utc_now_iso(),
+                },
+                idempotency_key=str(uuid4()),
+                require_device_credential=False,
+                explicit_device_credential=proposed_credential,
+            )
+            payload = response.json()
+            credential = payload.get("credential")
+            if (
+                payload.get("approved") is not True
+                or not isinstance(credential, str)
+                or credential != proposed_credential
+            ):
+                raise SourceError(
+                    "DEVICE_ENROLLMENT_INVALID_RESPONSE",
+                    "Data source returned an invalid device enrollment response.",
+                    retryable=False,
+                )
+            device_id = payload.get("deviceId")
+            if not isinstance(device_id, str) or not device_id:
+                raise SourceError(
+                    "DEVICE_ENROLLMENT_INVALID_RESPONSE",
+                    "Data source did not identify the enrolled device.",
+                    retryable=False,
+                )
+            self.credential_store.set(marker_reference, device_id)
+
     def test_connection(self) -> SourceMeta:
-        response = self._request("GET", "/meta")
+        response = self._request(
+            "GET", "/meta", require_device_credential=False
+        )
         payload = response.json()
         if (
             payload.get("protocol") != "wechat-moments-publisher-source"
@@ -131,12 +250,14 @@ class StandardHttpSource:
                 "Data source does not advertise protocol version 1.0",
                 retryable=False,
             )
-        return SourceMeta(
+        meta = SourceMeta(
             protocol=payload["protocol"],
             versions=list(payload["versions"]),
             source_name=payload.get("sourceName", self.config.name),
             server_time=payload["serverTime"],
         )
+        self._ensure_enrolled()
+        return meta
 
     def heartbeat(self, snapshot: AgentSnapshot) -> None:
         payload = {

@@ -16,8 +16,12 @@ from .standard_http_v1 import StandardHttpSource, utc_now_iso
 
 
 class StandardHttpV2Source(StandardHttpSource):
+    protocol_version = "2.0"
+
     def test_connection(self) -> SourceMeta:
-        response = self._request("GET", "/meta")
+        response = self._request(
+            "GET", "/meta", require_device_credential=False
+        )
         payload = response.json()
         if (
             payload.get("protocol") != "content-publisher-source"
@@ -28,12 +32,14 @@ class StandardHttpV2Source(StandardHttpSource):
                 "Data source does not advertise protocol version 2.0",
                 retryable=False,
             )
-        return SourceMeta(
+        meta = SourceMeta(
             protocol=payload["protocol"],
             versions=list(payload["versions"]),
             source_name=payload.get("sourceName", self.config.name),
             server_time=payload["serverTime"],
         )
+        self._ensure_enrolled()
+        return meta
 
     def heartbeat(
         self,

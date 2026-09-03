@@ -40,12 +40,30 @@ def build_source(handler):
 
 def test_standard_http_routes_headers_and_empty_claim():
     requests = []
+    enrolled_credentials = []
 
     def handler(request):
         requests.append(request)
         assert request.headers["x-api-key"] == "test-api-key"
         assert request.headers["x-agent-id"].startswith("agent-")
         assert request.headers["x-agent-instance-id"] == "instance-test"
+        if request.url.path.endswith("/agents/enroll"):
+            proposed = request.headers["x-agent-credential"]
+            assert len(proposed) >= 32
+            enrolled_credentials.append(proposed)
+            body = json.loads(request.content)
+            assert body["protocolVersion"] == "1.0"
+            return httpx.Response(
+                201,
+                json={
+                    "approved": True,
+                    "deviceId": "device-1",
+                    "credential": proposed,
+                    "credentialVersion": 1,
+                    "issuedAt": datetime.now(timezone.utc).isoformat(),
+                    "requestId": "request-enroll",
+                },
+            )
         if request.url.path.endswith("/meta"):
             return httpx.Response(
                 200,
@@ -58,6 +76,9 @@ def test_standard_http_routes_headers_and_empty_claim():
                 },
             )
         if request.url.path.endswith("/agents/heartbeat"):
+            assert request.headers["x-agent-credential"] == (
+                enrolled_credentials[0]
+            )
             assert request.headers["idempotency-key"]
             body = json.loads(request.content)
             assert body["wechat"]["nickname"] == "番石榴"
@@ -91,7 +112,7 @@ def test_standard_http_routes_headers_and_empty_claim():
         )
     )
     assert source.claim() is None
-    assert len(requests) == 3
+    assert len(requests) == 4
 
 
 def test_problem_response_maps_auth_failure_without_exposing_secret():

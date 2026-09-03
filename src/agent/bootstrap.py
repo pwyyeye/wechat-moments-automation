@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .config import AgentConfig, SourceConfig, save_config
 from .credential_store import CredentialStore
+from .sources.standard_http_v1 import (
+    device_credential_ref,
+    device_enrollment_marker_ref,
+)
 
 
 class BootstrapAuth(BaseModel):
@@ -84,8 +88,13 @@ def import_bootstrap(
     bundle = AgentBootstrap.model_validate(json.loads(path.read_text(encoding="utf-8")))
     source_configs = [source.source_config() for source in bundle.sources]
     replacement_ids = {source.id for source in source_configs}
+    existing_sources = {source.id: source for source in config.sources}
 
     for bootstrap_source, source_config in zip(bundle.sources, source_configs):
+        existing = existing_sources.get(source_config.id)
+        if existing and str(existing.base_url) != str(source_config.base_url):
+            credential_store.delete(device_credential_ref(source_config.id))
+            credential_store.delete(device_enrollment_marker_ref(source_config.id))
         credential_store.set(
             source_config.auth.credential_ref,
             bootstrap_source.auth.credential,

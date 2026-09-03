@@ -7,14 +7,18 @@ authenticated accounts in one heartbeat.
 ## Routes
 
 - `GET /openapi/publisher-agent/v2/meta`
+- `POST /openapi/publisher-agent/v2/agents/enroll`
 - `POST /openapi/publisher-agent/v2/agents/heartbeat`
 - `POST /openapi/publisher-agent/v2/tasks/claim`
 - `POST /openapi/publisher-agent/v2/tasks/{taskId}/lease/renew`
 - `POST /openapi/publisher-agent/v2/tasks/{taskId}/events`
 
-Every write request uses `X-Agent-Id`, `X-Agent-Instance-Id`, and
-`X-Request-Id`. Event requests additionally use `Idempotency-Key`, equal to
-the event ID.
+The Agent calls `agents/enroll` once and stores the returned device credential
+with Windows DPAPI. Every later write request uses `X-Agent-Id`,
+`X-Agent-Instance-Id`, `X-Agent-Credential`, and `X-Request-Id`. Event requests
+additionally use `Idempotency-Key`, equal to the event ID. Disabled devices are
+rejected immediately with `DEVICE_DISABLED`; there is no legacy credential-free
+mode.
 
 ## Exact routing key
 

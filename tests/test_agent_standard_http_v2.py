@@ -124,11 +124,28 @@ def snapshot():
 
 def test_v2_source_heartbeat_and_claim_include_exact_executor_route():
     requests = []
+    enrolled_credentials = []
     executor, account = executor_and_account()
 
     def handler(request):
         requests.append(request)
         assert request.headers["x-api-key"] == "v2-secret"
+        if request.url.path.endswith("/agents/enroll"):
+            proposed = request.headers["x-agent-credential"]
+            enrolled_credentials.append(proposed)
+            body = json.loads(request.content)
+            assert body["protocolVersion"] == "2.0"
+            return httpx.Response(
+                201,
+                json={
+                    "approved": True,
+                    "deviceId": "device-v2",
+                    "credential": proposed,
+                    "credentialVersion": 1,
+                    "issuedAt": datetime.now(timezone.utc).isoformat(),
+                    "requestId": "request-enroll-v2",
+                },
+            )
         if request.url.path.endswith("/meta"):
             return httpx.Response(
                 200,
@@ -140,6 +157,9 @@ def test_v2_source_heartbeat_and_claim_include_exact_executor_route():
                 },
             )
         if request.url.path.endswith("/agents/heartbeat"):
+            assert request.headers["x-agent-credential"] == (
+                enrolled_credentials[0]
+            )
             body = json.loads(request.content)
             assert body["executors"][0]["executorInstanceId"] == executor.executor_instance_id
             assert body["accounts"][0]["accountStableId"] == account.account_stable_id
@@ -157,12 +177,29 @@ def test_v2_source_heartbeat_and_claim_include_exact_executor_route():
     claim = source.claim(executor, [account])
 
     assert claim.task.route.executor_instance_id == executor.executor_instance_id
-    assert len(requests) == 3
+    assert len(requests) == 4
 
 
 def test_v2_source_rejects_claim_if_account_changed_after_request():
     executor, account = executor_and_account()
-    source = build_source(lambda request: httpx.Response(200, json=claim_response(account_stable_id="other")))
+
+    def handler(request):
+        if request.url.path.endswith("/agents/enroll"):
+            proposed = request.headers["x-agent-credential"]
+            return httpx.Response(
+                201,
+                json={
+                    "approved": True,
+                    "deviceId": "device-v2",
+                    "credential": proposed,
+                },
+            )
+        return httpx.Response(
+            200,
+            json=claim_response(account_stable_id="other"),
+        )
+
+    source = build_source(handler)
 
     with pytest.raises(SourceError, match="current authenticated account") as error:
         source.claim(executor, [account])

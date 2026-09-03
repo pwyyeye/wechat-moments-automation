@@ -647,14 +647,19 @@ class NativeAdminWindow:
         self.source_tree.delete(*self.source_tree.get_children())
         for source in self._sources:
             state = source.get("healthState", "unknown")
-            credential = "" if source.get("hasCredential") else " / 待配置凭据"
+            if not source.get("hasCredential"):
+                enrollment = " / 待导入连接配置"
+            elif source.get("deviceEnrolled"):
+                enrollment = " / 设备已登记"
+            else:
+                enrollment = " / 首次连接自动登记"
             self.source_tree.insert(
                 "",
                 "end",
                 iid=source["id"],
                 values=(
                     source.get("name", source["id"]),
-                    state + credential,
+                    state + enrollment,
                     source.get("accountKey", "-"),
                     source.get("baseUrl", "-"),
                 ),

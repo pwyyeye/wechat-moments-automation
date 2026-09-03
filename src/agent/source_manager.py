@@ -20,7 +20,11 @@ from .models_v2 import (
 )
 from .scheduler import WeightedFairScheduler
 from .sources.base import SourceError, SourceMeta
-from .sources.standard_http_v1 import StandardHttpSource
+from .sources.standard_http_v1 import (
+    StandardHttpSource,
+    device_credential_ref,
+    device_enrollment_marker_ref,
+)
 from .sources.standard_http_v2 import StandardHttpV2Source
 
 logger = logging.getLogger(__name__)
@@ -42,7 +46,12 @@ class SourceRuntime:
 
     @property
     def available(self) -> bool:
-        if self.health_state in {"auth_error", "incompatible", "disabled", "unconfigured"}:
+        if self.health_state in {
+            "auth_error",
+            "incompatible",
+            "disabled",
+            "unconfigured",
+        }:
             return False
         return self.backoff_until is None or self.backoff_until <= datetime.now(timezone.utc)
 
@@ -344,6 +353,7 @@ class SourceManager:
                     "allowedHosts": source.media_security.allowed_hosts,
                     "allowPrivateNetwork": source.media_security.allow_private_network,
                     "hasCredential": self._credential_available(source),
+                    "deviceEnrolled": self._device_enrolled(source),
                     "healthState": self._runtime[source.id].health_state,
                     "backoffUntil": (
                         self._runtime[source.id].backoff_until.isoformat()
@@ -439,6 +449,9 @@ class SourceManager:
             if error.code == "SOURCE_CREDENTIAL_MISSING":
                 runtime.health_state = "unconfigured"
                 runtime.backoff_until = None
+            elif error.code == "DEVICE_DISABLED":
+                runtime.health_state = "disabled_by_server"
+                runtime.backoff_until = datetime.now(timezone.utc) + timedelta(seconds=60)
             elif error.code == "SOURCE_AUTH_FAILED" or error.status_code in {401, 403}:
                 runtime.health_state = "auth_error"
                 runtime.backoff_until = None
@@ -472,6 +485,15 @@ class SourceManager:
     def _credential_available(self, source: SourceConfig) -> bool:
         try:
             return bool(self.credential_store.get(source.auth.credential_ref))
+        except (FileNotFoundError, KeyError, ValueError):
+            return False
+
+    def _device_enrolled(self, source: SourceConfig) -> bool:
+        try:
+            return bool(
+                self.credential_store.get(device_credential_ref(source.id))
+                and self.credential_store.get(device_enrollment_marker_ref(source.id))
+            )
         except (FileNotFoundError, KeyError, ValueError):
             return False
 

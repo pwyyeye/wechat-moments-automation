@@ -1,5 +1,5 @@
 #define AppName "微信小助手"
-#define AppVersion "0.6.9"
+#define AppVersion "0.7.0"
 #define AppExeName "WechatPublisherAgent.exe"
 
 [Setup]
@@ -28,9 +28,13 @@ Source: "..\dist\WechatPublisherAgent\*"; DestDir: "{app}"; Excludes: "_internal
 Source: "..\scripts\install-startup.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\scripts\remove-startup.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "..\scripts\verify-installed-agent.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
-; Optional deployment secret. The Agent imports it into Windows DPAPI on first
-; start and removes the plaintext copy from LocalAppData immediately.
+; Release builds embed the deployment bootstrap when /DBootstrapFile is set.
+; Development builds can still load a sidecar beside the installer.
+#ifdef BootstrapFile
+Source: "{#BootstrapFile}"; DestDir: "{localappdata}\WechatPublisherAgent"; DestName: "bootstrap.json"; Flags: ignoreversion
+#else
 Source: "{src}\agent-bootstrap.json"; DestDir: "{localappdata}\WechatPublisherAgent"; DestName: "bootstrap.json"; Flags: external skipifsourcedoesntexist
+#endif
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "--agent-ui"

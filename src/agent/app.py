@@ -26,6 +26,10 @@ from .media_cache import MediaCache
 from .outbox import OutboxDispatcher
 from .outbox_v2 import V2OutboxDispatcher
 from .source_manager import SourceManager
+from .sources.standard_http_v1 import (
+    device_credential_ref,
+    device_enrollment_marker_ref,
+)
 from .version import AGENT_VERSION
 from .worker import PublisherWorker
 from .worker_v2 import PublisherV2Worker
@@ -394,6 +398,11 @@ class PublisherAgentApp:
             if not create_only and existing_index is None:
                 raise ValueError(f"source {body.id} does not exist")
             credential_ref = f"dpapi://{body.id}"
+            old_source = (
+                self.config.sources[existing_index]
+                if existing_index is not None
+                else None
+            )
             if body.credential:
                 self.credential_store.set(credential_ref, body.credential)
             elif existing_index is None:
@@ -407,6 +416,11 @@ class PublisherAgentApp:
                 self.config.sources.append(source)
             else:
                 self.config.sources[existing_index] = source
+                if old_source and str(old_source.base_url) != str(source.base_url):
+                    self.credential_store.delete(device_credential_ref(body.id))
+                    self.credential_store.delete(
+                        device_enrollment_marker_ref(body.id)
+                    )
             save_config(self.config, self.config_path)
             self.source_manager.reload(self.config)
 
@@ -430,6 +444,8 @@ class PublisherAgentApp:
             save_config(self.config, self.config_path)
             self.source_manager.reload(self.config)
             self.credential_store.delete(existing.auth.credential_ref)
+            self.credential_store.delete(device_credential_ref(source_id))
+            self.credential_store.delete(device_enrollment_marker_ref(source_id))
 
     def upsert_wechat_sync_profile(self, body, *, create_only: bool) -> None:
         with self._config_lock:

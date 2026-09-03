@@ -388,8 +388,8 @@ def test_admin_html_handles_non_json_errors_without_masking_them(tmp_path):
     assert "try{data=JSON.parse(raw)}catch{data=raw}" in html
     assert "安全退出 Agent" in html
     assert "重新识别微信" in html
-    assert "携带部署配置安装时会自动导入默认内容中心" in html
-    assert "配置 API Key" in html
+    assert "设备首次连接会自动登记" in html
+    assert "测试并登记" in html
     assert "f.authType.value=s.authType" in html
     assert "timeoutMs=10000" in html
     assert "最多等待 20 秒" in html
@@ -456,6 +456,46 @@ def test_bootstrap_imports_source_credential_and_removes_plaintext(tmp_path):
     assert source["baseUrl"].startswith("https://content.example.test/")
     assert source["healthState"] == "unknown"
     assert source["hasCredential"] is True
+    app.stop()
+
+
+def test_bootstrap_base_url_change_requires_new_device_enrollment(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    save_config(AgentConfig(sources=[default_source_config()]), config_path)
+    bootstrap_path = tmp_path / "bootstrap.json"
+    bootstrap_path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "sources": [
+                    {
+                        "id": DEFAULT_SOURCE_ID,
+                        "name": "新内容中心",
+                        "baseUrl": "https://new.example.test/openapi/publisher-agent/v2",
+                        "auth": {"type": "bearer", "credential": "new-api-key"},
+                        "allowedHosts": ["new.example.test"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    credentials = InMemoryCredentialStore()
+    credentials.set(f"dpapi://{DEFAULT_SOURCE_ID}.device", "old-device-key")
+    credentials.set(f"dpapi://{DEFAULT_SOURCE_ID}.device-enrolled", "old-device-id")
+
+    app = PublisherAgentApp(
+        config_path,
+        executor=FakeExecutor(),
+        credential_store=credentials,
+        payload_protector=IdentityPayloadProtector(),
+        source_factory=FakeSource,
+    )
+
+    assert credentials.get(f"dpapi://{DEFAULT_SOURCE_ID}") == "new-api-key"
+    assert f"dpapi://{DEFAULT_SOURCE_ID}.device" not in credentials.values
+    assert f"dpapi://{DEFAULT_SOURCE_ID}.device-enrolled" not in credentials.values
+    assert app.source_manager.status()[0]["deviceEnrolled"] is False
     app.stop()
 
 
