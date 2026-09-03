@@ -1,5 +1,5 @@
 #define AppName "微信小助手"
-#define AppVersion "0.6.8"
+#define AppVersion "0.6.9"
 #define AppExeName "WechatPublisherAgent.exe"
 
 [Setup]

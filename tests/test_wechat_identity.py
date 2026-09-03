@@ -6,6 +6,7 @@ import numpy as np
 import src.agent.wechat_identity as wechat_identity
 from src.agent.wechat_identity import (
     WeChatIdentity,
+    _profile_avatar_points,
     _try_activate_window,
     parse_profile_identity,
 )
@@ -116,6 +117,20 @@ def test_cached_identity_is_invalidated_when_wechat_session_changes(monkeypatch)
     assert status["code"] == "WECHAT_SESSION_CHANGED"
 
 
+def test_profile_avatar_points_cover_scaled_and_legacy_layouts() -> None:
+    assert _profile_avatar_points(
+        left=90,
+        top=100,
+        client_left=100,
+        client_top=130,
+        scale=1.5,
+    ) == [
+        (157, 220),
+        (155, 224),
+        (145, 194),
+    ]
+
+
 def test_profile_detection_uses_one_click_and_closes_recognized_popover(monkeypatch) -> None:
     import win32api
     import win32gui
@@ -136,6 +151,7 @@ def test_profile_detection_uses_one_click_and_closes_recognized_popover(monkeypa
     monkeypatch.setattr(wechat_identity.ctypes, "windll", SimpleNamespace(user32=user32))
     monkeypatch.setattr(wechat_identity, "_get_identity_ocr_engine", lambda: engine)
     monkeypatch.setattr(wechat_identity, "_try_activate_window", lambda hwnd: True)
+    monkeypatch.setattr(wechat_identity.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(win32gui, "IsWindowVisible", lambda hwnd: True)
     monkeypatch.setattr(win32gui, "GetForegroundWindow", lambda: 999)
     monkeypatch.setattr(win32gui, "IsIconic", lambda hwnd: False)
@@ -160,6 +176,53 @@ def test_profile_detection_uses_one_click_and_closes_recognized_popover(monkeypa
     assert len(key_events) == 2
 
 
+def test_profile_detection_tries_legacy_point_after_primary_miss(monkeypatch) -> None:
+    import win32api
+    import win32gui
+    from PIL import ImageGrab
+
+    cursor_points = []
+    results = iter(
+        [
+            [],
+            [
+                Block("番石榴", 180, 55),
+                Block("微信号：higuava001", 220, 95),
+            ],
+        ]
+    )
+    engine = SimpleNamespace(recognize=lambda image: next(results))
+    user32 = SimpleNamespace(
+        SetProcessDpiAwarenessContext=lambda context: None,
+        GetDpiForWindow=lambda hwnd: 96,
+    )
+    monkeypatch.setattr(wechat_identity.ctypes, "windll", SimpleNamespace(user32=user32))
+    monkeypatch.setattr(wechat_identity, "_get_identity_ocr_engine", lambda: engine)
+    monkeypatch.setattr(wechat_identity, "_try_activate_window", lambda hwnd: True)
+    monkeypatch.setattr(wechat_identity.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(win32gui, "IsWindowVisible", lambda hwnd: True)
+    monkeypatch.setattr(win32gui, "GetForegroundWindow", lambda: 999)
+    monkeypatch.setattr(win32gui, "IsIconic", lambda hwnd: False)
+    monkeypatch.setattr(win32gui, "GetWindowRect", lambda hwnd: (100, 100, 900, 700))
+    monkeypatch.setattr(win32gui, "ClientToScreen", lambda hwnd, point: (100, 130))
+    monkeypatch.setattr(win32gui, "IsWindow", lambda hwnd: True)
+    monkeypatch.setattr(win32gui, "SetForegroundWindow", lambda hwnd: None)
+    monkeypatch.setattr(win32api, "GetCursorPos", lambda: (10, 20))
+    monkeypatch.setattr(win32api, "SetCursorPos", lambda point: cursor_points.append(point))
+    monkeypatch.setattr(win32api, "mouse_event", lambda *args: None)
+    monkeypatch.setattr(win32api, "keybd_event", lambda *args: None)
+    monkeypatch.setattr(
+        ImageGrab,
+        "grab",
+        lambda **kwargs: np.zeros((10, 10, 3), dtype=np.uint8),
+    )
+
+    identity = wechat_identity._detect_profile_identity(123)
+
+    assert identity == WeChatIdentity("番石榴", "higuava001")
+    assert cursor_points[:2] == [(138, 190), (155, 224)]
+
+
 def test_profile_detection_does_not_send_blind_escape(monkeypatch) -> None:
     import win32api
     import win32gui
@@ -174,6 +237,7 @@ def test_profile_detection_does_not_send_blind_escape(monkeypatch) -> None:
     monkeypatch.setattr(wechat_identity.ctypes, "windll", SimpleNamespace(user32=user32))
     monkeypatch.setattr(wechat_identity, "_get_identity_ocr_engine", lambda: engine)
     monkeypatch.setattr(wechat_identity, "_try_activate_window", lambda hwnd: True)
+    monkeypatch.setattr(wechat_identity.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(win32gui, "IsWindowVisible", lambda hwnd: True)
     monkeypatch.setattr(win32gui, "GetForegroundWindow", lambda: 999)
     monkeypatch.setattr(win32gui, "IsIconic", lambda hwnd: False)

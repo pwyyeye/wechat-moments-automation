@@ -2,8 +2,8 @@
 
 版本无关的 PC 微信朋友圈自动化。事件驱动架构 + 语义级定位 + 可持久化的多数据源 Agent。
 
-[![Version](https://img.shields.io/badge/version-0.6.8-blue)]()
-[![Tests](https://img.shields.io/badge/tests-198%20passed-brightgreen)]()
+[![Version](https://img.shields.io/badge/version-0.6.9-blue)]()
+[![Tests](https://img.shields.io/badge/tests-200%20passed-brightgreen)]()
 [![Python](https://img.shields.io/badge/python-3.10+-blue)]()
 [![.NET](https://img.shields.io/badge/.NET-8.0-purple)]()
 [![License](https://img.shields.io/badge/license-MIT-green)]()
@@ -79,6 +79,12 @@ Agent 领单前要求桌面可交互且未锁屏、微信正在运行且已登�
 | **版本追踪** | 从 PE 头读取微信版本，变化时自动重建模板库 |
 | **任务持久** | Agent 侧 SQLite 账本 + 事务化 outbox，重启不丢状态；核心侧 `state.json` 记录每日计数与历史 |
 | **通知系统** | Telegram Bot + 邮件（SMTP）+ Windows 系统通知 |
+
+### Agent 0.6.9 新增
+
+- 微信账号识别从单一头像坐标改为最多三个有限候选点，兼容不同 DPI、标题栏和新版微信侧栏布局。
+- 每个候选点只点击一次，首个识别成功即停止；只有 OCR 明确确认资料卡后才发送 Escape，避免弹窗或关闭操作循环。
+- 鼠标按下与抬起之间增加短暂间隔，并记录候选序号、坐标、OCR 块数和资料卡状态，方便异机诊断。
 
 ### Agent 0.6.8 新增
 
@@ -445,7 +451,7 @@ python main.py --test
 powershell -ExecutionPolicy Bypass -File scripts\build-agent.ps1
 ```
 
-产物：`dist\WechatPublisherAgent\WechatPublisherAgent.exe`，安装包 `packaging\output\微信小助手-0.6.8-setup.exe`。
+产物：`dist\WechatPublisherAgent\WechatPublisherAgent.exe`，安装包 `packaging\output\微信小助手-0.6.9-setup.exe`。
 
 当前本地构建产物未包含 Authenticode 签名。正式跨电脑分发前应使用组织代码签名证书签名安装包，并重新记录签名后文件的 SHA-256。
 
@@ -484,7 +490,7 @@ OCR 引擎优先级：微信原生 OCR（`wechat_native_ocr.py`）→ PaddleOCR 
 ## 测试
 
 ```bash
-python -m pytest              # 198 passed
+python -m pytest              # 200 passed
 python -m pytest tests/test_core.py -v
 python -m pytest tests/test_core.py::test_name -v
 python -m ruff check .        # ruff: E/F/W/I，line-length 100，忽略 E501

@@ -280,6 +280,26 @@ def _try_activate_window(hwnd: int) -> bool:
     return win32gui.GetForegroundWindow() == hwnd
 
 
+def _profile_avatar_points(
+    *,
+    left: int,
+    top: int,
+    client_left: int,
+    client_top: int,
+    scale: float,
+) -> list[tuple[int, int]]:
+    """Return a finite set of known-safe avatar points across WeChat layouts."""
+    candidates = [
+        (
+            client_left + round(38 * scale),
+            client_top + round(60 * scale),
+        ),
+        (client_left + 55, client_top + 94),
+        (left + 55, top + 94),
+    ]
+    return list(dict.fromkeys(candidates))
+
+
 def _detect_profile_identity(hwnd: int) -> WeChatIdentity | None:
     import numpy as np
     import win32api
@@ -313,39 +333,57 @@ def _detect_profile_identity(hwnd: int) -> WeChatIdentity | None:
         get_dpi = getattr(ctypes.windll.user32, "GetDpiForWindow", None)
         dpi = get_dpi(hwnd) if get_dpi else 96
         scale = min(max((dpi or 96) / 96, 0.75), 3.0)
-        avatar_screen_x = client_left + round(38 * scale)
-        avatar_screen_y = client_top + round(60 * scale)
+        avatar_points = _profile_avatar_points(
+            left=left,
+            top=top,
+            client_left=client_left,
+            client_top=client_top,
+            scale=scale,
+        )
         logger.info(
-            "manual WeChat identity detection started hwnd=%s point=(%s,%s) dpi=%s",
+            "manual WeChat identity detection started hwnd=%s points=%s dpi=%s",
             hwnd,
-            avatar_screen_x,
-            avatar_screen_y,
+            avatar_points,
             dpi,
         )
-        win32api.SetCursorPos((avatar_screen_x, avatar_screen_y))
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        time.sleep(0.5)
+        for attempt, (avatar_screen_x, avatar_screen_y) in enumerate(avatar_points, 1):
+            if not (left <= avatar_screen_x < right and top <= avatar_screen_y < bottom):
+                continue
+            win32api.SetCursorPos((avatar_screen_x, avatar_screen_y))
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            time.sleep(0.08)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            time.sleep(0.65)
 
-        profile = ImageGrab.grab(
-            bbox=(
-                client_left + round(46 * scale),
-                client_top,
-                min(right, client_left + round(440 * scale)),
-                min(bottom, client_top + round(270 * scale)),
-            ),
-            all_screens=True,
-        )
-        blocks = engine.recognize(np.array(profile))
-        identity = parse_profile_identity(blocks)
-        profile_opened = identity is not None or _looks_like_profile(blocks)
+            profile = ImageGrab.grab(
+                bbox=(
+                    client_left + round(42 * scale),
+                    client_top,
+                    min(right, client_left + round(480 * scale)),
+                    min(bottom, client_top + round(320 * scale)),
+                ),
+                all_screens=True,
+            )
+            blocks = engine.recognize(np.array(profile))
+            identity = parse_profile_identity(blocks)
+            profile_opened = identity is not None or _looks_like_profile(blocks)
+            logger.info(
+                "manual WeChat identity attempt=%s point=(%s,%s) blocks=%s recognized=%s profileOpened=%s",
+                attempt,
+                avatar_screen_x,
+                avatar_screen_y,
+                len(blocks),
+                identity is not None,
+                profile_opened,
+            )
+            if identity is not None or profile_opened:
+                return identity
+
         logger.info(
-            "manual WeChat identity detection finished hwnd=%s recognized=%s profileOpened=%s",
+            "manual WeChat identity detection finished hwnd=%s recognized=false profileOpened=false",
             hwnd,
-            identity is not None,
-            profile_opened,
         )
-        return identity
+        return None
     finally:
         try:
             if profile_opened:
